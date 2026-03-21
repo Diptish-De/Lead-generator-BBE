@@ -52,6 +52,27 @@ That's it! The scraper will:
 4. ⭐ Score and filter leads
 5. 📊 Send data to your Google Sheet + save CSV backup
 
+### Step 3: Start the Backend & Frontend Dashboard
+
+If you want to view your generated leads in the interactive UI rather than just the spreadsheet, you can boot up the dashboard server system.
+
+**1. Start the Backend API:**
+Open a terminal in the root folder (`Lead-generator-BBE`) and run:
+```bash
+npm install
+npm run start:api
+```
+This serves the lead generation and analytics data securely to your frontend.
+
+**2. Start the Frontend Dashboard:**
+Open a **new terminal** window, navigate to the `dashboard` folder, and run:
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+Click the local URL (e.g., `http://localhost:5173`) that appears in the terminal to open the UI!
+
 ---
 
 ## 📂 Project Structure

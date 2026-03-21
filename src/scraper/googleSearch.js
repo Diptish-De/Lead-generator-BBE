@@ -58,12 +58,14 @@ async function searchGoogle(browser, query) {
 
     // Extract organic result links
     const links = await page.evaluate(() => {
-      const anchors = document.querySelectorAll('div#search a[href^="http"]');
+      // Look for literally ANY external link on the page (safest possible selector)
+      const anchors = document.querySelectorAll('a');
       const urls = [];
       anchors.forEach(a => {
         const href = a.href;
-        if (href && !href.includes('google.com') && !href.includes('webcache')) {
-          urls.push(href);
+        if (href && href.startsWith('http')) {
+          const isGoogle = href.includes('google.') || href.includes('youtube.com') || href.includes('blogger.com');
+          if (!isGoogle) urls.push(href);
         }
       });
       return urls;
@@ -73,6 +75,10 @@ async function searchGoogle(browser, query) {
       if (!isBlockedDomain(link)) {
         results.push(cleanUrl(link));
       }
+    }
+
+    if (results.length === 0) {
+      throw new Error('Google returned 0 organic URLs. CAPTCHA or blocked.');
     }
   } catch (err) {
     console.log(`  ⚠️  Google search failed for "${query}": ${err.message}`);
@@ -91,15 +97,17 @@ async function searchDuckDuckGo(page, query) {
   const results = [];
 
   try {
-    console.log(`  🦆 Falling back to DuckDuckGo for: "${query}"`);
+    console.log(`  🦆 Falling back to DuckDuckGo HTML for: "${query}"`);
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await new Promise(r => setTimeout(r, 1500));
+    
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 2000));
 
     const links = await page.evaluate(() => {
-      const anchors = document.querySelectorAll('a.result__a');
-      return Array.from(anchors).map(a => a.href).filter(h => h.startsWith('http'));
+      const anchors = document.querySelectorAll('a');
+      return Array.from(anchors)
+        .map(a => a.href)
+        .filter(h => h && h.startsWith('http') && !h.includes('duckduckgo.com'));
     });
 
     for (const link of links) {
@@ -121,8 +129,13 @@ async function collectSearchResults() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+    headless: false, // 🔴 Changed to FALSE: Visible window completely bypasses Google's headless flags!
+    args: [
+      '--no-sandbox', 
+      '--disable-setuid-sandbox', 
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1000,800'
+    ],
   });
 
   const allUrls = new Set();

@@ -100,8 +100,8 @@ function extractCompanyName($, url) {
   for (let i = 0; i < schemaScripts.length; i++) {
     try {
       const data = JSON.parse($(schemaScripts[i]).html());
-      if (data.name && data.name.length < 80) return cleanCompanyName(data.name);
-      if (data.organization?.name) return cleanCompanyName(data.organization.name);
+      if (data.name && typeof data.name === 'string' && data.name.length < 80) return cleanCompanyName(data.name);
+      if (data.organization?.name && typeof data.organization.name === 'string') return cleanCompanyName(data.organization.name);
     } catch {}
   }
 
@@ -155,7 +155,7 @@ function extractDecisionMaker(text) {
 }
 
 // ── Location Extraction ────────────────────────────────────────────
-function extractLocation($, text) {
+function extractLocation($, url, text) {
   let country = '';
   let city = '';
 
@@ -185,7 +185,7 @@ function extractLocation($, text) {
       '.ie': 'Ireland', '.pl': 'Poland', '.cz': 'Czech Republic',
     };
 
-    const hostname = new URL(text.includes('http') ? text : `http://${text}`).hostname || '';
+    const hostname = new URL(url).hostname || '';
     for (const [tld, c] of Object.entries(tldMap)) {
       if (hostname.endsWith(tld)) {
         country = c;
@@ -254,9 +254,9 @@ async function extractFromWebsite(browser, url) {
   page.on('request', req => {
     const type = req.resourceType();
     if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
-      req.abort();
+      req.abort().catch(() => {});
     } else {
-      req.continue();
+      req.continue().catch(() => {});
     }
   });
 
@@ -287,7 +287,7 @@ async function extractFromWebsite(browser, url) {
     data.emails.push(...extractEmails(html)); // Also check raw HTML for mailto: links
     data.phones.push(...extractPhones(text));
     data.instagram = extractInstagram(text, html);
-    const loc = extractLocation($, url);
+    const loc = extractLocation($, url, text);
     data.city = loc.city;
     data.country = loc.country;
     data.decisionMaker = extractDecisionMaker(text);
@@ -312,7 +312,7 @@ async function extractFromWebsite(browser, url) {
         data.phones.push(...extractPhones(text));
         if (!data.instagram) data.instagram = extractInstagram(text, html);
 
-        const subLoc = extractLocation($, subUrl);
+        const subLoc = extractLocation($, subUrl, text);
         if (!data.city && subLoc.city) data.city = subLoc.city;
         if (!data.country && subLoc.country) data.country = subLoc.country;
         if (!data.decisionMaker) data.decisionMaker = extractDecisionMaker(text);
@@ -323,22 +323,9 @@ async function extractFromWebsite(browser, url) {
       }
     }
 
-    // Extract mailto: links specifically
-    const mailtoEmails = html.match(/mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/gi) || [];
-    mailtoEmails.forEach(m => {
-      const email = m.replace('mailto:', '').toLowerCase();
-      data.emails.push(email);
-    });
-
     // Deduplicate
     data.emails = [...new Set(data.emails.map(e => e.toLowerCase()))];
     data.phones = [...new Set(data.phones)];
-
-    // Re-filter junk emails after dedup
-    data.emails = data.emails.filter(email => {
-      const prefix = email.split('@')[0];
-      return !config.junkEmailPrefixes.some(junk => prefix === junk || prefix.startsWith(junk));
-    });
 
   } catch (err) {
     console.log(`    ⚠️  Failed to extract from ${url}: ${err.message}`);
