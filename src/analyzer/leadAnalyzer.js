@@ -105,6 +105,25 @@ function generateNotes(companyName, businessType, productStyle, text) {
   return `${companyName || 'Business'} — potential decor/handicrafts buyer`;
 }
 
+function calculateScore(data, businessType, targetAudience) {
+  let score = 0;
+  // Core contact info
+  if (data.emails && data.emails.length > 0) score += 3;
+  if (data.decisionMaker) score += 5;
+  if (data.instagram) score += 2;
+  if (data.phones && data.phones.length > 0) score += 1;
+  
+  // High value matches
+  if (['Premium Buyers', 'Design Professionals', 'Gift Buyers'].includes(targetAudience)) score += 2;
+  if (['Boutique', 'Interior Designer', 'Lifestyle Brand'].includes(businessType)) score += 3;
+  
+  let chance = 'Low';
+  if (score >= 8) chance = 'High';
+  else if (score >= 5) chance = 'Medium';
+  
+  return { score, chance };
+}
+
 // ── Main Analyzer ──────────────────────────────────────────────────
 
 function analyzeLead(extractedData) {
@@ -114,12 +133,16 @@ function analyzeLead(extractedData) {
   const productStyle = detectMultipleStyles(text);
   const targetAudience = detectCategory(text, TARGET_AUDIENCE_KEYWORDS);
   const notes = generateNotes(extractedData.companyName, businessType, productStyle, text);
+  
+  const { score, chance } = calculateScore(extractedData, businessType, targetAudience);
 
   return {
     businessType,
     productStyle,
     targetAudience,
     notes,
+    leadScore: score,
+    chance,
   };
 }
 
@@ -127,13 +150,14 @@ function analyzeLead(extractedData) {
 
 function analyzeAllLeads(extractedDataList) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🧠 STEP 3: Analyzing business profiles...');
+  console.log('🧠 STEP 3: Analyzing and Scoring business profiles...');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   const results = extractedDataList.map((data, i) => {
     const analysis = analyzeLead(data);
     console.log(`  [${i + 1}/${extractedDataList.length}] ${data.companyName || 'Unknown'}`);
     console.log(`    📁 ${analysis.businessType} | 🎨 ${analysis.productStyle} | 👥 ${analysis.targetAudience}`);
+    console.log(`    ⭐ Score: ${analysis.leadScore} (${analysis.chance} chance)`);
     console.log(`    📝 ${analysis.notes}\n`);
 
     return {

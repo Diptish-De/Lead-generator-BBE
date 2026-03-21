@@ -1,4 +1,6 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
 const cheerio = require('cheerio');
 const config = require('../config');
 
@@ -134,6 +136,24 @@ function cleanCompanyName(name) {
     .slice(0, 80);
 }
 
+// ── Decision Maker Extraction ────────────────────────────────────────
+function extractDecisionMaker(text) {
+  const patterns = [
+    /(?:founded by|founder is|founder:)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i,
+    /(?:CEO|Chief Executive Officer)\s*(?:is|-|:|: )\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i,
+    /(?:owner|owned by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i,
+    /([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?),\s*(?:Founder|CEO|Owner)/
+  ];
+  for (const pattern of patterns) {
+    const match = (text || '').match(pattern);
+    if (match && match[1]) {
+      const name = match[1].trim();
+      if (name.length > 2 && name.length < 30 && !name.toLowerCase().includes('the ')) return name;
+    }
+  }
+  return '';
+}
+
 // ── Location Extraction ────────────────────────────────────────────
 function extractLocation($, text) {
   let country = '';
@@ -248,6 +268,7 @@ async function extractFromWebsite(browser, url) {
     instagram: '',
     city: '',
     country: '',
+    decisionMaker: '',
     pageText: '',
     html: '',
   };
@@ -269,6 +290,7 @@ async function extractFromWebsite(browser, url) {
     const loc = extractLocation($, url);
     data.city = loc.city;
     data.country = loc.country;
+    data.decisionMaker = extractDecisionMaker(text);
     data.pageText = text.slice(0, 5000); // Keep first 5000 chars for analysis
     data.html = html;
 
@@ -293,6 +315,7 @@ async function extractFromWebsite(browser, url) {
         const subLoc = extractLocation($, subUrl);
         if (!data.city && subLoc.city) data.city = subLoc.city;
         if (!data.country && subLoc.country) data.country = subLoc.country;
+        if (!data.decisionMaker) data.decisionMaker = extractDecisionMaker(text);
 
         data.pageText += ' ' + text.slice(0, 3000);
       } catch {

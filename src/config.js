@@ -60,7 +60,7 @@ module.exports = {
   csvHeaders: [
     'Company Name', 'Website', 'Email', 'Country', 'City',
     'Business Type', 'Product Style', 'Target Audience',
-    'Instagram', 'Phone', 'Notes', 'Lead Score', 'Chance', 'Date Scraped',
+    'Instagram', 'Phone', 'Decision Maker', 'Notes', 'Lead Score', 'Chance', 'Date Scraped',
     'Status', 'Emailed'
   ],
 };

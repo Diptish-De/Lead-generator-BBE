@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 
 function App() {
   const [activeTab, setActiveTab] = useState('scraper'); // 'scraper' or 'database'
@@ -112,18 +113,17 @@ function App() {
     setIsLoadingDB(false);
   };
 
-  const toggleEmailed = async (index, currentValue) => {
+  const updateStatus = async (index, newStatus) => {
     try {
-      const newValue = currentValue === 'Yes' ? '' : 'Yes';
       const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ Emailed: newValue })
+        body: JSON.stringify({ Status: newStatus })
       });
       const data = await res.json();
       if (data.success) setDbLeads(data.leads);
     } catch (err) {
-      console.error('Failed to update email status', err);
+      console.error('Failed to update status', err);
     }
   };
 
@@ -169,6 +169,28 @@ function App() {
   const copyData = (text) => {
     if (!text || text === '-') return;
     navigator.clipboard.writeText(text);
+  };
+
+  const generateEmailTemplate = (lead) => {
+    if (!lead.Email) return '#';
+    const name = lead['Decision Maker'] || 'Team';
+    const company = lead['Company Name'] || 'your company';
+    const audience = lead['Target Audience'] || 'your customers';
+    const country = lead['Country'] || 'your region';
+    
+    
+    const subject = `Partnership with Blueblood Exports for ${company}`;
+    const body = `Hi ${name},\n\nI loved ${company}'s collection and focus on ${audience} in ${country}!\n\nWe supply high-end, artisan-made Indian handicrafts and home decor that perfectly fits your aesthetic. Are you currently open to seeing our new B2B catalog?\n\nBest regards,\nBlueblood Exports`;
+    
+    return `mailto:${lead.Email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  };
+
+  const handleDMPitch = (e, lead) => {
+    e.stopPropagation();
+    const name = lead['Decision Maker'] || 'there';
+    const dmText = `Hi ${name}! Loving your feed. We supply artisan handcrafted decor from India that fits your aesthetic perfectly. Open to seeing a quick catalog?`;
+    copyData(dmText);
+    window.open(lead.Instagram, '_blank');
   };
 
   const exportCurrentViewToSheets = async () => {
@@ -248,6 +270,12 @@ function App() {
             className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'scraper' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
           >
             🔌 Scraper Engine
+          </button>
+          <button 
+            onClick={() => setActiveTab('analytics')}
+            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'analytics' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            📈 Analytics
           </button>
           <button 
             onClick={() => setActiveTab('database')}
@@ -384,6 +412,74 @@ function App() {
         </div>
       )}
 
+      {/* --- TAB CONTENT: ANALYTICS --- */}
+      {activeTab === 'analytics' && (
+        <div className="flex-1 overflow-auto bg-[#f8fafc] p-4 md:p-8 w-full min-h-0">
+          <div className="max-w-6xl mx-auto space-y-6 pb-12">
+            <h2 className="text-2xl font-bold text-slate-800 mb-6 border-b border-slate-200 pb-4">Pipeline & Growth Analytics</h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="text-sm font-bold text-slate-500 uppercase">Total Leads in DB</h3>
+                <p className="text-4xl font-black text-blue-600 mt-2">{dbLeads.length}</p>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="text-sm font-bold text-slate-500 uppercase">VIP Leads (Score 8+)</h3>
+                <p className="text-4xl font-black text-indigo-600 mt-2">{dbLeads.filter(l => parseInt(l['Lead Score']||0) >= 8).length}</p>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="text-sm font-bold text-slate-500 uppercase">Closed Deals</h3>
+                <p className="text-4xl font-black text-emerald-600 mt-2">{dbLeads.filter(l => l.Status === 'Closed').length}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-80">
+                <h3 className="font-bold text-slate-700 mb-4">Leads by Country Breakdown</h3>
+                <div className="h-[220px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={Object.entries(dbLeads.reduce((acc, lead) => {
+                          const country = lead.Country || 'Unknown';
+                          acc[country] = (acc[country] || 0) + 1;
+                          return acc;
+                        }, {})).map(([name, value]) => ({ name, value })).sort((a,b)=>b.value-a.value).slice(0, 10)}
+                        cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value" label={({name}) => name.substring(0, 10)}
+                      >
+                        {dbLeads.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'][index % 8]} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-80">
+                <h3 className="font-bold text-slate-700 mb-4">Sales Pipeline Stages</h3>
+                <div className="h-[220px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={
+                      ['New', 'Contacted', 'Replied', 'Negotiation', 'Closed'].map(status => ({
+                        name: status,
+                        count: dbLeads.filter(l => (l.Status || 'New') === status).length
+                      }))
+                    } margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <XAxis dataKey="name" tick={{fontSize: 12}} />
+                      <YAxis allowDecimals={false} />
+                      <RechartsTooltip />
+                      <Bar dataKey="count" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* --- TAB CONTENT: DATABASE CRM --- (Unchanged) */}
       {activeTab === 'database' && (
         <div className="flex-1 flex flex-col p-4 md:p-6 min-h-0 w-full overflow-hidden bg-white">
@@ -416,8 +512,8 @@ function App() {
                 <table className="min-w-max w-full text-left border-collapse">
                   <thead className="bg-[#f8fafc] sticky top-0 z-10 shadow-[0_1px_2px_rgba(0,0,0,0.05)] text-[10px] uppercase font-bold text-slate-500">
                     <tr>
-                      <th className="px-3 py-3 w-8">Mail</th>
-                      {['Company Name', 'Email', 'Send Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
+                      <th className="px-3 py-3 w-8">Pipeline Status</th>
+                      {['Company Name', 'Decision Maker', 'Email', 'Smart Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
                         <th key={header} onClick={() => handleSort(header)} className="px-3 py-3 cursor-pointer hover:bg-slate-200 whitespace-nowrap">{header} {sortConfig?.key === header ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}</th>
                       ))}
                       <th className="px-3 py-3 text-right">Actions</th>
@@ -427,19 +523,35 @@ function App() {
                     {sortedLeads.map((lead) => {
                       const idx = lead.originalIndex;
                       return (
-                        <tr key={idx} className={`hover:bg-blue-50/40 transition-colors ${lead.Emailed === 'Yes' ? 'bg-slate-50/50' : ''}`}>
-                          <td className="px-3 py-2 text-center" onClick={(e) => { e.stopPropagation(); toggleEmailed(idx, lead.Emailed); }}>
-                            <input type="checkbox" checked={lead.Emailed === 'Yes'} readOnly className="w-4 h-4 cursor-pointer accent-blue-600" title="Mark as emailed"/>
+                        <tr key={idx} className={`hover:bg-blue-50/40 transition-colors ${lead.Status === 'Contacted' ? 'bg-indigo-50/40' : lead.Status === 'Replied' ? 'bg-amber-50/40' : lead.Status === 'Closed' ? 'bg-teal-50/50' : ''}`}>
+                          <td className="px-3 py-2 text-center" onClick={(e) => e.stopPropagation()}>
+                            <select 
+                              value={lead.Status && lead.Status !== 'Trashed' ? lead.Status : 'New'} 
+                              onChange={(e) => updateStatus(idx, e.target.value)}
+                              className="bg-white border border-slate-300 rounded text-[11px] font-bold p-1 shadow-sm focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                            >
+                              <option value="New">🔵 New Lead</option>
+                              <option value="Contacted">🟣 Contacted</option>
+                              <option value="Replied">🟠 Replied</option>
+                              <option value="Negotiation">🟡 Negotiation</option>
+                              <option value="Closed">🟢 Closed Deal</option>
+                            </select>
                           </td>
                           <td className="px-3 py-2 font-semibold text-slate-800 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead['Company Name'])}>{lead['Company Name']}</td>
+                          <td className="px-3 py-2 text-slate-700 font-medium cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead['Decision Maker'])}>{lead['Decision Maker'] || '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead.Email)}>{lead.Email || '-'}</td>
-                          <td className="px-3 py-2 font-medium">{lead.Email ? <a href={`mailto:${lead.Email}?subject=Partnership with Blueblood Exports`} onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:text-blue-800 hover:underline">✉️ Email</a> : '-'}</td>
+                          <td className="px-3 py-2 font-medium">{lead.Email ? <a href={generateEmailTemplate(lead)} onClick={(e) => e.stopPropagation()} className="text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-full text-xs shadow-sm shadow-blue-500/30 font-bold tracking-wide transition-all uppercase whitespace-nowrap flex items-center justify-center gap-1">✨ Write Pitch</a> : '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead.Phone)}>{lead.Phone || '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead.Country)}>{lead.Country || '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead['Business Type'])}>{lead['Business Type'] || '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead['Target Audience'])}>{lead['Target Audience'] || '-'}</td>
-                          <td className="px-3 py-2 text-blue-600 underline">
-                            {lead.Instagram ? <a href={lead.Instagram} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>IG ↗</a> : '-'}
+                          <td className="px-3 py-2 text-blue-600">
+                            {lead.Instagram ? (
+                              <div className="flex gap-2">
+                                <a href={lead.Instagram} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="underline text-xs mt-1">IG ↗</a>
+                                <button onClick={(e) => handleDMPitch(e, lead)} className="text-white bg-pink-600 hover:bg-pink-700 px-2 py-1 rounded text-[10px] uppercase font-bold tracking-wider transition-all whitespace-nowrap shadow-sm">💬 DM Pitch</button>
+                              </div>
+                            ) : '-'}
                           </td>
                           <td className="px-3 py-2 text-slate-500 whitespace-normal min-w-[250px] cursor-pointer hover:bg-blue-100 transition-colors border-x border-transparent hover:border-blue-200" title="Click to copy" onClick={() => copyData(lead.Notes)}>{lead.Notes || '-'}</td>
                           <td className="px-3 py-2 font-mono text-center font-bold" onClick={() => copyData(lead['Lead Score'])}>{lead['Lead Score']}</td>
