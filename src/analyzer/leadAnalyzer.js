@@ -1,3 +1,14 @@
+require('dotenv').config();
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const dns = require('dns').promises;
+
+let genAI = null;
+let model = null;
+if (process.env.GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+}
+
 // ── Keyword Dictionaries ───────────────────────────────────────────
 
 const BUSINESS_TYPE_KEYWORDS = {
@@ -146,25 +157,114 @@ function analyzeLead(extractedData) {
   };
 }
 
+async function analyzeLeadAI(extractedData, rulesBasedAnalysis) {
+  if (!model) return rulesBasedAnalysis; // Fallback to standard regex rules if no API key
+
+  try {
+    const text = (extractedData.pageText || '').substring(0, 15000);
+    if (text.length < 100) return rulesBasedAnalysis;
+
+    const prompt = `
+      You are an expert B2B lead generation analyst for 'Blueblood Exports', an Indian company supplying high-end, artisan-made handicrafts, home decor, and furniture.
+      Read the following website text of a company we just scraped.
+      
+      Determine if this company is a good wholesale buyer for our products.
+      
+      Respond STRICTLY with ONLY a raw JSON object (no markdown formatting, no code blocks like \`\`\`json).
+      Format exactly like this:
+      {
+        "businessType": "Boutique / Interior Designer / E-commerce / etc",
+        "productStyle": "Boho / Luxury / Minimal / etc",
+        "targetAudience": "Premium Buyers / Eco-Conscious / etc",
+        "notes": "A 1-sentence analytical summary of what this company does and why they are a good or bad fit for Blueblood Exports.",
+        "leadScore": (Number 1-10 based purely on context. 10 = perfect match looking for artisans, 1 = completely unrelated),
+        "chance": "High / Medium / Low"
+      }
+      
+      Website Text to Analyze:
+      "${text}"
+    `;
+
+    const result = await model.generateContent(prompt);
+    let output = result.response.text();
+    output = output.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    const parsedData = JSON.parse(output);
+    return parsedData;
+  } catch (error) {
+    console.log(`    ⚠️ AI processing failed, falling back to Rules. Error: ${error.message}`);
+    return rulesBasedAnalysis;
+  }
+}
+
 // ── Batch Analyze ──────────────────────────────────────────────────
 
-function analyzeAllLeads(extractedDataList) {
+async function analyzeAllLeads(extractedDataList) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🧠 STEP 3: Analyzing and Scoring business profiles...');
+  console.log('🧠 STEP 3: Initializing Engine & Analyzing business profiles...');
+  if (process.env.GEMINI_API_KEY) {
+    console.log('🤖 AI ENGINE ONLINE: Using Google Gemini for Deep Analysis!');
+  } else {
+    console.log('⚠️ AI ENGINE OFFLINE: Using Standard Rules Analysis (Add GEMINI_API_KEY to .env to activate AI)');
+  }
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const results = extractedDataList.map((data, i) => {
-    const analysis = analyzeLead(data);
+  const results = [];
+
+  for (let i = 0; i < extractedDataList.length; i++) {
+    const data = extractedDataList[i];
+    
+    // 1. Get baseline rules-based score (also serves as robust fallback)
+    const baseAnalysis = analyzeLead(data);
+    
+    // 2. Upgrade to AI analysis
+    const analysis = await analyzeLeadAI(data, baseAnalysis);
+    
+    // 3. Keep purely technical data-density bonuses from tracking (Emails, Phones, IG, Decision Maker)
+    let bonus = 0;
+    if (data.emails && data.emails.length > 0) bonus += 2;
+    if (data.decisionMaker) bonus += 3;
+    if (data.phones && data.phones.length > 0) bonus += 1;
+    if (data.instagram) bonus += 1;
+    
+    // Add bonus to base or AI score, capping at 10
+    const finalScore = Math.min(10, (analysis.leadScore || baseAnalysis.leadScore || 1) + bonus);
+    const finalChance = finalScore >= 8 ? 'High' : (finalScore >= 5 ? 'Medium' : 'Low');
+    
+    analysis.leadScore = finalScore;
+    analysis.chance = finalChance;
+
+    // 4. Verify Email Deliverability
+    let emailValid = 'Unknown';
+    if (data.emails && data.emails.length > 0) {
+      try {
+        const domain = data.emails[0].split('@')[1];
+        if (domain) {
+          const mxRecords = await dns.resolveMx(domain);
+          emailValid = (mxRecords && mxRecords.length > 0) ? 'Valid' : 'Invalid';
+        }
+      } catch (e) {
+        emailValid = 'Invalid';
+      }
+    }
+    analysis.emailValid = emailValid;
+
     console.log(`  [${i + 1}/${extractedDataList.length}] ${data.companyName || 'Unknown'}`);
     console.log(`    📁 ${analysis.businessType} | 🎨 ${analysis.productStyle} | 👥 ${analysis.targetAudience}`);
     console.log(`    ⭐ Score: ${analysis.leadScore} (${analysis.chance} chance)`);
+    console.log(`    📧 Email Status: ${analysis.emailValid}`);
     console.log(`    📝 ${analysis.notes}\n`);
 
-    return {
+    results.push({
       ...data,
       ...analysis,
-    };
-  });
+    });
+    
+    // Hard rate limit to protect free tier
+    if (process.env.GEMINI_API_KEY && i < extractedDataList.length - 1) {
+      await new Promise(r => setTimeout(r, 4000));
+    }
+  }
 
   return results;
 }

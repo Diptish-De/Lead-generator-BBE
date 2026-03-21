@@ -88,6 +88,10 @@ app.put('/api/leads/:index', (req, res) => {
       if (indexToUpdate >= 0 && indexToUpdate < results.length) {
         results[indexToUpdate] = { ...results[indexToUpdate], ...updates };
         
+        if (updates.Status && ['Contacted', 'Replied', 'Negotiation'].includes(updates.Status)) {
+          results[indexToUpdate]['Last Contacted'] = new Date().toISOString();
+        }
+        
         const { createObjectCsvWriter } = require('csv-writer');
         const csvWriter = createObjectCsvWriter({
           path: csvPath,
@@ -187,7 +191,7 @@ async function runScraperJob() {
       return;
     }
 
-    const analyzedLeads = analyzeAllLeads(extractedData);
+    const analyzedLeads = await analyzeAllLeads(extractedData);
     const finalLeads = scoreAndFilterLeads(analyzedLeads);
 
     if (finalLeads.length === 0) {

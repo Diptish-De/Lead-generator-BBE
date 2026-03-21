@@ -58,9 +58,9 @@ module.exports = {
 
   // ── CSV Column Headers ─────────────────────────────────────────
   csvHeaders: [
-    'Company Name', 'Website', 'Email', 'Country', 'City',
+    'Company Name', 'Website', 'Email', 'Email Valid', 'Country', 'City',
     'Business Type', 'Product Style', 'Target Audience',
     'Instagram', 'Phone', 'Decision Maker', 'Notes', 'Lead Score', 'Chance', 'Date Scraped',
-    'Status', 'Emailed'
+    'Status', 'Emailed', 'Last Contacted'
   ],
 };

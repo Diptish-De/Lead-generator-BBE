@@ -193,6 +193,13 @@ function App() {
     window.open(lead.Instagram, '_blank');
   };
 
+  const handleLinkedInSearch = (e, lead) => {
+    e.stopPropagation();
+    const company = lead['Company Name'] || '';
+    const query = `site:linkedin.com/in "Founder" OR "CEO" OR "Owner" "${company}"`;
+    window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
+  };
+
   const exportCurrentViewToSheets = async () => {
     setExportingToSheets(true);
     try {
@@ -513,7 +520,8 @@ function App() {
                   <thead className="bg-[#f8fafc] sticky top-0 z-10 shadow-[0_1px_2px_rgba(0,0,0,0.05)] text-[10px] uppercase font-bold text-slate-500">
                     <tr>
                       <th className="px-3 py-3 w-8">Pipeline Status</th>
-                      {['Company Name', 'Decision Maker', 'Email', 'Smart Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
+                      <th className="px-3 py-3">Follow-Up</th>
+                      {['Company Name', 'Decision Maker', 'LinkedIn', 'Email', 'Smart Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
                         <th key={header} onClick={() => handleSort(header)} className="px-3 py-3 cursor-pointer hover:bg-slate-200 whitespace-nowrap">{header} {sortConfig?.key === header ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}</th>
                       ))}
                       <th className="px-3 py-3 text-right">Actions</th>
@@ -522,8 +530,14 @@ function App() {
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {sortedLeads.map((lead) => {
                       const idx = lead.originalIndex;
+                      
+                      // Auto-Follow Up Logic
+                      const lastContacted = lead['Last Contacted'] ? new Date(lead['Last Contacted']) : null;
+                      const daysPassed = lastContacted ? Math.floor((new Date() - lastContacted) / (1000 * 60 * 60 * 24)) : 0;
+                      const isOverdue = (lead.Status === 'Contacted' || lead.Status === 'Replied' || lead.Status === 'Negotiation') && daysPassed >= 3;
+
                       return (
-                        <tr key={idx} className={`hover:bg-blue-50/40 transition-colors ${lead.Status === 'Contacted' ? 'bg-indigo-50/40' : lead.Status === 'Replied' ? 'bg-amber-50/40' : lead.Status === 'Closed' ? 'bg-teal-50/50' : ''}`}>
+                        <tr key={idx} className={`hover:bg-blue-50/40 transition-colors ${isOverdue ? 'bg-red-50/50 border-l-4 border-l-red-500' : lead.Status === 'Contacted' ? 'bg-indigo-50/40' : lead.Status === 'Replied' ? 'bg-amber-50/40' : lead.Status === 'Closed' ? 'bg-teal-50/50' : ''}`}>
                           <td className="px-3 py-2 text-center" onClick={(e) => e.stopPropagation()}>
                             <select 
                               value={lead.Status && lead.Status !== 'Trashed' ? lead.Status : 'New'} 
@@ -537,9 +551,19 @@ function App() {
                               <option value="Closed">🟢 Closed Deal</option>
                             </select>
                           </td>
+                          <td className="px-3 py-2 font-semibold text-center">
+                            {isOverdue && <span className="text-red-600 bg-red-100 px-2 py-0.5 rounded text-[10px] font-black uppercase whitespace-nowrap shadow-sm">Overdue ⏰</span>}
+                          </td>
                           <td className="px-3 py-2 font-semibold text-slate-800 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead['Company Name'])}>{lead['Company Name']}</td>
                           <td className="px-3 py-2 text-slate-700 font-medium cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead['Decision Maker'])}>{lead['Decision Maker'] || '-'}</td>
-                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead.Email)}>{lead.Email || '-'}</td>
+                          <td className="px-3 py-2 font-medium">
+                            <button onClick={(e) => handleLinkedInSearch(e, lead)} className="text-white bg-[#0a66c2] hover:bg-[#004182] px-2 py-1 rounded text-[10px] uppercase font-bold tracking-wider transition-all shadow-sm">🔍 Find Owner</button>
+                          </td>
+                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors flex items-center gap-1" title="Click to copy" onClick={() => copyData(lead.Email)}>
+                            {lead.Email || '-'}
+                            {lead['Email Valid'] === 'Valid' && <span title="Email is Verified via Network Ping">✅</span>}
+                            {lead['Email Valid'] === 'Invalid' && <span title="Email is potentially dead/fake">⚠️</span>}
+                          </td>
                           <td className="px-3 py-2 font-medium">{lead.Email ? <a href={generateEmailTemplate(lead)} onClick={(e) => e.stopPropagation()} className="text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-full text-xs shadow-sm shadow-blue-500/30 font-bold tracking-wide transition-all uppercase whitespace-nowrap flex items-center justify-center gap-1">✨ Write Pitch</a> : '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead.Phone)}>{lead.Phone || '-'}</td>
                           <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead.Country)}>{lead.Country || '-'}</td>
