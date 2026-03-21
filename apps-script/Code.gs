@@ -41,10 +41,10 @@ function doPost(e) {
         sheet.autoResizeColumn(col);
       }
       
-      // Color-code the Chance column (last column)
+      // Color-code the Chance column
       const lastRow = sheet.getLastRow();
-      const chanceCol = data.headers.length; // Last column
-      const scoreCol = data.headers.length - 1; // Second to last
+      const chanceCol = data.headers.indexOf('Chance') + 1 || data.headers.length - 1;
+      const scoreCol = data.headers.indexOf('Lead Score') + 1 || data.headers.length - 2;
       
       for (let row = 2; row <= lastRow; row++) {
         const chance = sheet.getRange(row, chanceCol).getValue();
@@ -127,7 +127,7 @@ function addSampleLead() {
     const headers = [
       'Company Name', 'Website', 'Email', 'Country', 'City',
       'Business Type', 'Product Style', 'Target Audience',
-      'Instagram', 'Phone', 'Notes', 'Lead Score', 'Chance'
+      'Instagram', 'Phone', 'Notes', 'Lead Score', 'Chance', 'Date Scraped'
     ];
     sheet.appendRow(headers);
     const headerRange = sheet.getRange(1, 1, 1, headers.length);
@@ -142,7 +142,7 @@ function addSampleLead() {
     'Sample Decor Co', 'https://example.com', 'hello@example.com',
     'USA', 'New York', 'Home Decor Store', 'Handmade, Boho',
     'Premium Buyers', 'https://instagram.com/sample', '+1-555-0123',
-    'Premium handmade home decor boutique', 5, 'High'
+    'Premium handmade home decor boutique', 5, 'High', new Date().toLocaleString()
   ]);
   
   SpreadsheetApp.getUi().alert('Sample lead added! Check Sheet1.');
