@@ -38,8 +38,8 @@ function getDomain(url) {
   }
 }
 
-// ── Google Search via Puppeteer ────────────────────────────────────
-async function searchGoogle(browser, query) {
+// ── Bing Search via Puppeteer ──────────────────────────────────────
+async function searchBing(browser, query) {
   const page = await browser.newPage();
   const ua = randomUserAgent();
   await page.setUserAgent(ua);
@@ -48,8 +48,8 @@ async function searchGoogle(browser, query) {
   const results = [];
 
   try {
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=${config.maxResultsPerQuery}`;
-    console.log(`  🔍 Searching: "${query}"`);
+    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${config.maxResultsPerQuery}`;
+    console.log(`  🔍 Searching Bing: "${query}"`);
 
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
@@ -58,14 +58,14 @@ async function searchGoogle(browser, query) {
 
     // Extract organic result links
     const links = await page.evaluate(() => {
-      // Look for literally ANY external link on the page (safest possible selector)
-      const anchors = document.querySelectorAll('a');
+      // Bing results are heavily contained within h2 a
+      const anchors = document.querySelectorAll('h2 a, .b_algo h2 a');
       const urls = [];
       anchors.forEach(a => {
         const href = a.href;
         if (href && href.startsWith('http')) {
-          const isGoogle = href.includes('google.') || href.includes('youtube.com') || href.includes('blogger.com');
-          if (!isGoogle) urls.push(href);
+          const isBing = href.includes('bing.com') || href.includes('microsoft.com');
+          if (!isBing) urls.push(href);
         }
       });
       return urls;
@@ -78,13 +78,13 @@ async function searchGoogle(browser, query) {
     }
 
     if (results.length === 0) {
-      throw new Error('Google returned 0 organic URLs. CAPTCHA or blocked.');
+      throw new Error('Bing returned 0 organic URLs. Try Yahoo.');
     }
   } catch (err) {
-    console.log(`  ⚠️  Google search failed for "${query}": ${err.message}`);
-    // Fallback to DuckDuckGo
-    const ddgResults = await searchDuckDuckGo(page, query);
-    results.push(...ddgResults);
+    console.log(`  ⚠️  Bing search failed for "${query}": ${err.message}`);
+    // Fallback to Yahoo
+    const yahooResults = await searchYahoo(page, query);
+    results.push(...yahooResults);
   } finally {
     await page.close();
   }
@@ -92,22 +92,22 @@ async function searchGoogle(browser, query) {
   return [...new Set(results)].slice(0, config.maxResultsPerQuery);
 }
 
-// ── DuckDuckGo Fallback ────────────────────────────────────────────
-async function searchDuckDuckGo(page, query) {
+// ── Yahoo Fallback ─────────────────────────────────────────────────
+async function searchYahoo(page, query) {
   const results = [];
 
   try {
-    console.log(`  🦆 Falling back to DuckDuckGo HTML for: "${query}"`);
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    console.log(`  🦆 Falling back to Yahoo Search for: "${query}"`);
+    const searchUrl = `https://search.yahoo.com/search?p=${encodeURIComponent(query)}&n=${config.maxResultsPerQuery}`;
     
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await new Promise(r => setTimeout(r, 2000));
 
     const links = await page.evaluate(() => {
-      const anchors = document.querySelectorAll('a');
+      const anchors = document.querySelectorAll('.algo-title, .title a, a');
       return Array.from(anchors)
         .map(a => a.href)
-        .filter(h => h && h.startsWith('http') && !h.includes('duckduckgo.com'));
+        .filter(h => h && h.startsWith('http') && !h.includes('yahoo.com') && !h.includes('bing.com'));
     });
 
     for (const link of links) {
@@ -116,7 +116,7 @@ async function searchDuckDuckGo(page, query) {
       }
     }
   } catch (err) {
-    console.log(`  ⚠️  DuckDuckGo search also failed: ${err.message}`);
+    console.log(`  ⚠️  Yahoo search also failed: ${err.message}`);
   }
 
   return results;
@@ -142,7 +142,7 @@ async function collectSearchResults() {
 
   for (let i = 0; i < config.searchQueries.length; i++) {
     const query = config.searchQueries[i];
-    const urls = await searchGoogle(browser, query);
+    const urls = await searchBing(browser, query);
 
     urls.forEach(url => {
       const domain = getDomain(url);
