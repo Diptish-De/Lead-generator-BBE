@@ -48,6 +48,124 @@ app.get('/api/logs', (req, res) => {
   res.json({ logs: currentLogs });
 });
 
+const fs = require('fs');
+const csv = require('csv-parser');
+const path = require('path');
+
+// GET all leads from CSV
+app.get('/api/leads', (req, res) => {
+  const results = [];
+  const csvPath = path.resolve(config.outputFile);
+  
+  if (!fs.existsSync(csvPath)) {
+    return res.json({ leads: [] });
+  }
+
+  fs.createReadStream(csvPath)
+    .pipe(csv())
+    .on('data', (data) => results.push(data))
+    .on('end', () => {
+      res.json({ leads: results });
+    })
+    .on('error', (error) => {
+      res.status(500).json({ error: error.message });
+    });
+});
+
+// UPDATE a lead by index (0-based) for Status or Emailed
+app.put('/api/leads/:index', (req, res) => {
+  const indexToUpdate = parseInt(req.params.index, 10);
+  const updates = req.body; // e.g., { Status: 'Trashed', Emailed: 'true' }
+  const results = [];
+  const csvPath = path.resolve(config.outputFile);
+
+  if (!fs.existsSync(csvPath)) return res.status(404).json({ error: 'File not found' });
+
+  fs.createReadStream(csvPath)
+    .pipe(csv())
+    .on('data', (data) => results.push(data))
+    .on('end', async () => {
+      if (indexToUpdate >= 0 && indexToUpdate < results.length) {
+        results[indexToUpdate] = { ...results[indexToUpdate], ...updates };
+        
+        const { createObjectCsvWriter } = require('csv-writer');
+        const csvWriter = createObjectCsvWriter({
+          path: csvPath,
+          header: config.csvHeaders.map(h => ({ id: h, title: h })),
+          encoding: 'utf8'
+        });
+        
+        await csvWriter.writeRecords(results);
+        res.json({ success: true, leads: results });
+      } else {
+        res.status(400).json({ error: 'Invalid index' });
+      }
+    });
+});
+
+// DELETE a lead by index (0-based) - PERMANENT DELETE
+app.delete('/api/leads/:index', (req, res) => {
+  const indexToDelete = parseInt(req.params.index, 10);
+  const results = [];
+  const csvPath = path.resolve(config.outputFile);
+
+  if (!fs.existsSync(csvPath)) return res.status(404).json({ error: 'File not found' });
+
+  fs.createReadStream(csvPath)
+    .pipe(csv())
+    .on('data', (data) => results.push(data))
+    .on('end', async () => {
+      if (indexToDelete >= 0 && indexToDelete < results.length) {
+        results.splice(indexToDelete, 1);
+        
+        const { createObjectCsvWriter } = require('csv-writer');
+        const csvWriter = createObjectCsvWriter({
+          path: csvPath,
+          header: config.csvHeaders.map(h => ({ id: h, title: h })),
+          encoding: 'utf8'
+        });
+        
+        await csvWriter.writeRecords(results);
+        res.json({ success: true, leads: results });
+      } else {
+        res.status(400).json({ error: 'Invalid index' });
+      }
+    });
+});
+
+// EXPORT to Sheets Endpoint
+app.post('/api/export-sheets', async (req, res) => {
+  try {
+    const leads = req.body.leads || [];
+    if (leads.length === 0) return res.json({ success: false, message: 'No leads to export' });
+    
+    // Convert format slightly to match what sheetsExporter expects (chance, leadScore, dateScraped properties)
+    const mappedLeads = leads.map(l => ({
+      companyName: l['Company Name'],
+      website: l['Website'],
+      email: l['Email'],
+      country: l['Country'],
+      city: l['City'],
+      businessType: l['Business Type'],
+      productStyle: l['Product Style'],
+      targetAudience: l['Target Audience'],
+      instagram: l['Instagram'],
+      phone: l['Phone'],
+      notes: l['Notes'],
+      leadScore: l['Lead Score'],
+      chance: l['Chance'],
+      dateScraped: l['Date Scraped'],
+      status: l['Status'],
+      emailed: l['Emailed'],
+    }));
+
+    const result = await exportToGoogleSheet(mappedLeads);
+    res.json({ success: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 async function runScraperJob() {
   const startTime = Date.now();
   console.log(`\n================================`);

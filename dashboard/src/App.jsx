@@ -1,11 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 function App() {
-  const [queries, setQueries] = useState('home decor store USA\nboutique decor shop UK');
+  const [activeTab, setActiveTab] = useState('scraper'); // 'scraper' or 'database'
+  
+  // Scraper State
+  const [topics, setTopics] = useState({
+    'Home Decor Boutiques': true,
+    'Interior Designers': true,
+    'Furniture Stores': false,
+    'Handicraft Retailers': false,
+    'Museum Gift Shops': false,
+  });
+  
+  const [regions, setRegions] = useState({
+    'USA': true,
+    'UK': true,
+    'Europe': false,
+    'Australia': false,
+    'Canada': false,
+  });
+
+  const [customQueries, setCustomQueries] = useState('');
   const [logs, setLogs] = useState([]);
   const [isScraping, setIsScraping] = useState(false);
   const logEndRef = useRef(null);
 
+  // Database State
+  const [dbLeads, setDbLeads] = useState([]);
+  const [isLoadingDB, setIsLoadingDB] = useState(false);
+  const [sortConfig, setSortConfig] = useState(null);
+  const [filterText, setFilterText] = useState('');
+  const [dbView, setDbView] = useState('active'); // 'active' or 'trash'
+  const [exportingToSheets, setExportingToSheets] = useState(false);
+
+  // Poll Scraper Logs
   useEffect(() => {
     let interval;
     if (isScraping) {
@@ -15,15 +43,22 @@ function App() {
   }, [isScraping]);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+    if (activeTab === 'scraper') {
+      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'database') {
+      fetchLeads();
+    }
+  }, [activeTab]);
 
   const fetchLogs = async () => {
     try {
       const res = await fetch('http://localhost:4000/api/logs');
       const data = await res.json();
       setLogs(data.logs);
-
       if (data.logs.some(l => l.includes('JOB FINISHED'))) {
         setIsScraping(false);
       }
@@ -33,161 +68,409 @@ function App() {
   };
 
   const handleStart = async () => {
+    let finalQueries = [];
+    
+    const activeTopics = Object.keys(topics).filter(k => topics[k]);
+    const activeRegions = Object.keys(regions).filter(k => regions[k]);
+    
+    // Multiply topics globally
+    activeTopics.forEach(t => {
+      activeRegions.forEach(r => {
+        finalQueries.push(`${t} ${r}`);
+      });
+    });
+
+    const custom = customQueries.split('\n').map(q => q.trim()).filter(Boolean);
+    finalQueries = [...finalQueries, ...custom];
+
+    if (finalQueries.length === 0) return;
+
     setIsScraping(true);
     setLogs([]);
-    const queryArray = queries.split('\n').map(q => q.trim()).filter(Boolean);
 
     try {
       await fetch('http://localhost:4000/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ queries: queryArray })
+        body: JSON.stringify({ queries: finalQueries })
       });
     } catch (err) {
-      setLogs(prev => [...prev, `❌ Could not connect to the engine. Try restarting the backend api.`]);
+      setLogs(prev => [...prev, `❌ Network Error. Is backend running?`]);
       setIsScraping(false);
     }
   };
 
+  const fetchLeads = async () => {
+    setIsLoadingDB(true);
+    try {
+      const res = await fetch('http://localhost:4000/api/leads');
+      const data = await res.json();
+      setDbLeads(data.leads || []);
+    } catch (err) {
+      console.error('Error fetching leads:', err);
+    }
+    setIsLoadingDB(false);
+  };
+
+  const toggleEmailed = async (index, currentValue) => {
+    try {
+      const newValue = currentValue === 'Yes' ? '' : 'Yes';
+      const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Emailed: newValue })
+      });
+      const data = await res.json();
+      if (data.success) setDbLeads(data.leads);
+    } catch (err) {
+      console.error('Failed to update email status', err);
+    }
+  };
+
+  const moveToTrash = async (index) => {
+    try {
+      const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Status: 'Trashed' })
+      });
+      const data = await res.json();
+      if (data.success) setDbLeads(data.leads);
+    } catch (err) {
+      console.error('Failed to trash lead', err);
+    }
+  };
+
+  const restoreLead = async (index) => {
+    try {
+      const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Status: '' })
+      });
+      const data = await res.json();
+      if (data.success) setDbLeads(data.leads);
+    } catch (err) {
+      console.error('Failed to restore lead', err);
+    }
+  };
+
+  const permanentDelete = async (index) => {
+    if (!window.confirm("Permanently delete this lead? This cannot be undone.")) return;
+    try {
+      const res = await fetch(`http://localhost:4000/api/leads/${index}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) setDbLeads(data.leads);
+    } catch (err) {
+      console.error('Failed to permanently delete lead', err);
+    }
+  };
+
+  const copyData = (text) => {
+    if (!text || text === '-') return;
+    navigator.clipboard.writeText(text);
+  };
+
+  const exportCurrentViewToSheets = async () => {
+    setExportingToSheets(true);
+    try {
+      const res = await fetch('http://localhost:4000/api/export-sheets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leads: sortedLeads })
+      });
+      const data = await res.json();
+      if (data.success) alert("Successfully exported current view to Google Sheets!");
+      else alert("Export failed: " + data.message);
+    } catch (err) {
+      alert("Error exporting: " + err.message);
+    }
+    setExportingToSheets(false);
+  };
+
+  const handleSort = (key) => {
+    let direction = 'ascending';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
+      direction = 'descending';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // Compute the final Leads to show
+  const sortedLeads = React.useMemo(() => {
+    let filtered = dbLeads.map((l, originalIndex) => ({ ...l, originalIndex }));
+    
+    filtered = filtered.filter(l => dbView === 'trash' ? l.Status === 'Trashed' : l.Status !== 'Trashed');
+    
+    if (filterText.trim()) {
+      const lower = filterText.toLowerCase();
+      filtered = filtered.filter(l => 
+        (l['Company Name'] || '').toLowerCase().includes(lower) ||
+        (l['Email'] || '').toLowerCase().includes(lower) ||
+        (l['Website'] || '').toLowerCase().includes(lower) ||
+        (l['Notes'] || '').toLowerCase().includes(lower)
+      );
+    }
+
+    if (sortConfig !== null) {
+      filtered.sort((a, b) => {
+        let aVal = a[sortConfig.key] || '';
+        let bVal = b[sortConfig.key] || '';
+        if (sortConfig.key === 'Lead Score') {
+          aVal = parseInt(aVal, 10) || 0;
+          bVal = parseInt(bVal, 10) || 0;
+        }
+        if (aVal < bVal) return sortConfig.direction === 'ascending' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'ascending' ? 1 : -1;
+        return 0;
+      });
+    }
+    return filtered;
+  }, [dbLeads, sortConfig, filterText, dbView]);
+
+  const activeTopics = Object.keys(topics).filter(k => topics[k]);
+  const activeRegions = Object.keys(regions).filter(k => regions[k]);
+  const totalQueries = (activeTopics.length * activeRegions.length) + (customQueries.trim() ? customQueries.split('\n').filter(Boolean).length : 0);
+
   return (
-    <div className="h-screen w-screen overflow-hidden flex flex-col md:flex-row bg-[#f8fafc] text-slate-800 font-sans">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#f8fafc] text-slate-800 font-sans">
       
-      {/* LEFT SIDEBAR: Controls */}
-      <div className="w-full md:w-[400px] bg-white border-r border-slate-200 flex flex-col shadow-sm z-10">
-        
-        {/* Branding Header */}
-        <div className="p-6 border-b border-slate-100">
+      {/* GLOBAL HEADER & TABS */}
+      <div className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col md:flex-row justify-between items-center shadow-sm z-20 shrink-0 gap-4">
+        <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
             Blueblood <span className="text-blue-600">Exports</span>
           </h1>
-          <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mt-1">
-            Lead Generator
-          </p>
         </div>
-
-        {/* Input Area */}
-        <div className="p-6 flex-1 flex flex-col min-h-0 bg-slate-50/50">
-          <label className="block text-sm font-semibold text-slate-700 mb-2">
-            Search Keywords
-          </label>
-          <textarea 
-            className="flex-1 w-full bg-white text-slate-700 border border-slate-300 rounded-lg p-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all resize-none shadow-sm"
-            value={queries}
-            onChange={(e) => setQueries(e.target.value)}
-            disabled={isScraping}
-            placeholder="e.g. interior designers in London"
-          />
-          <p className="text-[11px] text-slate-400 mt-3 text-center">
-            Enter one query per line.
-          </p>
-        </div>
-
-        {/* Action Button */}
-        <div className="p-6 border-t border-slate-100 bg-white">
+        <div className="flex bg-slate-100 p-1 rounded-lg">
           <button 
-            onClick={handleStart}
-            disabled={isScraping || !queries.trim()}
-            className={`w-full py-4 rounded-lg font-medium text-sm transition-all focus:outline-none flex justify-center items-center gap-2
-              ${isScraping 
-                ? 'bg-slate-100 cursor-not-allowed text-slate-400 border border-slate-200' 
-                : 'bg-blue-800 text-white hover:bg-blue-900 shadow-md hover:shadow-lg active:scale-[0.98]'}`}
+            onClick={() => setActiveTab('scraper')}
+            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'scraper' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            {isScraping ? (
-              <>
-                 <svg className="animate-spin h-4 w-4 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Processing...
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                </svg>
-                Locate Prospects
-              </>
-            )}
+            🔌 Scraper Engine
+          </button>
+          <button 
+            onClick={() => setActiveTab('database')}
+            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'database' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            🗃️ Lead Database
           </button>
         </div>
       </div>
 
-      {/* RIGHT SIDE: Terminal / Output */}
-      <div className="flex-1 flex flex-col min-w-0 bg-slate-50 p-4 md:p-8">
-        
-        {/* Status Bar */}
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-            <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            Live Extraction Feed
-          </h2>
-          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm">
-             <span className="text-xs font-medium text-slate-500">Status:</span>
-             {isScraping ? (
-               <span className="flex items-center gap-1.5 text-xs font-bold text-blue-600">
-                 <span className="relative flex h-2 w-2">
-                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                   <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600"></span>
-                 </span>
-                 Extracting
-               </span>
-             ) : (
-               <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400">
-                 <span className="h-2 w-2 rounded-full bg-slate-300"></span>
-                 Idle
-               </span>
-             )}
-          </div>
-        </div>
-
-        {/* Console Box */}
-        <div className="flex-1 bg-[#1e293b] rounded-xl shadow-lg border border-slate-700/50 flex flex-col overflow-hidden relative">
-          
-          {/* Mac-style Window header */}
-          <div className="bg-[#0f172a] px-4 py-3 flex items-center shrink-0 border-b border-white/5">
-            <div className="flex space-x-2">
-              <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-              <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+      {/* --- TAB CONTENT: SCRAPER --- */}
+      {activeTab === 'scraper' && (
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 w-full">
+          {/* LEFT SIDEBAR: Topic Checks */}
+          <div className="w-full md:w-[420px] bg-white border-r border-slate-200 flex flex-col z-10 shrink-0 shadow-[2px_0_8px_rgba(0,0,0,0.02)]">
+            
+            <div className="p-5 border-b border-slate-100 bg-slate-50 shrink-0">
+              <h2 className="text-lg font-bold text-slate-800">Job Control</h2>
+              <p className="text-xs text-slate-500 mt-1">Configure your extraction parameters</p>
             </div>
-            <div className="mx-auto text-[11px] font-mono text-slate-500 select-none">puppeteer-engine</div>
-          </div>
-          
-          {/* Logs Area */}
-          {logs.length > 0 ? (
-            <div className="flex-1 overflow-y-auto p-5 font-mono text-[13px] text-green-400 leading-relaxed scroll-smooth">
-              {logs.map((log, index) => {
-                // Formatting specific keywords for better terminal reality
-                const isError = log.includes('❌') || log.includes('Error');
-                const isSuccess = log.includes('✅') || log.includes('DONE');
-                const isWarn = log.includes('⚠️');
-                const isHeader = log.includes('===') || log.includes('---');
-                
-                let textColor = "text-green-400";
-                if (isError) textColor = "text-red-400";
-                else if (isWarn) textColor = "text-yellow-400";
-                else if (isSuccess) textColor = "text-emerald-300 font-semibold";
-                else if (isHeader) textColor = "text-blue-300";
 
-                return (
-                  <div key={index} className={`mb-1 opacity-90 ${textColor}`}>
-                    <span className="text-slate-600 mr-3 select-none text-[10px]">➜</span>
-                    {log}
+            <div className="p-6 flex-1 flex flex-col bg-white overflow-y-auto min-h-0">
+              
+              {/* Topics */}
+              <div className="mb-6">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Target Topics</label>
+                <div className="flex flex-wrap gap-2">
+                  {Object.keys(topics).map(topic => (
+                    <label key={topic} className={`cursor-pointer px-3 py-1.5 rounded-full text-xs font-medium border flex items-center transition-colors select-none
+                      ${topics[topic] ? 'bg-blue-50 border-blue-300 text-blue-800 shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'}`}>
+                      <input type="checkbox" className="hidden" checked={topics[topic]} onChange={() => setTopics({...topics, [topic]: !topics[topic]})} disabled={isScraping} />
+                      {topics[topic] && <span className="mr-1.5 text-blue-600 font-bold">✓</span>}
+                      {topic}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Regions */}
+              <div className="mb-6">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Locations</label>
+                <div className="flex flex-wrap gap-2">
+                  {Object.keys(regions).map(region => (
+                    <label key={region} className={`cursor-pointer px-3 py-1.5 rounded-full text-xs font-medium border flex items-center transition-colors select-none
+                      ${regions[region] ? 'bg-indigo-50 border-indigo-300 text-indigo-800 shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'}`}>
+                      <input type="checkbox" className="hidden" checked={regions[region]} onChange={() => setRegions({...regions, [region]: !regions[region]})} disabled={isScraping} />
+                      {regions[region] && <span className="mr-1.5 text-indigo-600 font-bold">✓</span>}
+                      {region}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom */}
+              <div className="flex-1 flex flex-col min-h-[120px]">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 flex justify-between">
+                  <span>Custom Keywords</span>
+                  <span className="font-normal normal-case text-slate-400">(Optional)</span>
+                </label>
+                <textarea 
+                  className="flex-1 w-full bg-slate-50 text-slate-700 border border-slate-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all resize-none shadow-sm"
+                  value={customQueries}
+                  onChange={(e) => setCustomQueries(e.target.value)}
+                  disabled={isScraping}
+                  placeholder="Paste manual queries here...&#10;One per line."
+                />
+              </div>
+
+            </div>
+
+            <div className="p-5 border-t border-slate-100 bg-white shrink-0">
+              <div className="flex justify-between items-center mb-3 px-1 text-xs text-slate-500 font-medium">
+                <span>Calculated Searches:</span>
+                <span className="bg-slate-100 px-2 py-0.5 rounded-full font-bold text-slate-700">{totalQueries}</span>
+              </div>
+              <button 
+                onClick={handleStart}
+                disabled={isScraping || totalQueries === 0}
+                className={`w-full py-3.5 rounded-lg font-bold text-sm transition-all focus:outline-none flex justify-center items-center gap-2 uppercase tracking-wide
+                  ${isScraping ? 'bg-slate-100 cursor-not-allowed text-slate-400 border border-slate-200' : 'bg-[#1A237E] text-white hover:bg-[#0D113F] shadow-md hover:shadow-lg active:scale-[0.98]'}`}
+              >
+                {isScraping ? '⚙️ Processing...' : 'Search'}
+              </button>
+            </div>
+          </div>
+
+          {/* RIGHT SIDE: Terminal */}
+          <div className="flex-1 flex flex-col min-w-0 bg-[#f8fafc] p-4 md:p-8">
+            <div className="flex justify-between items-center mb-4 shrink-0">
+              <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+                <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                Live Extraction Feed
+              </h2>
+              <div className="flex gap-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm text-xs font-medium text-slate-500">
+                Engine Status: 
+                <span className={`flex items-center gap-1.5 text-xs font-bold ${isScraping ? 'text-blue-600' : 'text-slate-400'}`}>
+                  {isScraping && <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse"></span>}
+                  {!isScraping && <span className="h-2 w-2 rounded-full bg-slate-300"></span>}
+                  {isScraping ? 'Extracting' : 'Idle'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex-1 bg-[#1e293b] rounded-xl flex flex-col overflow-hidden shadow-lg border border-slate-700/50 min-h-0">
+              <div className="bg-[#0f172a] px-4 py-3 flex items-center shrink-0 border-b border-white/5">
+                <div className="flex space-x-2"><div className="w-3 h-3 rounded-full bg-red-500/80"></div><div className="w-3 h-3 rounded-full bg-yellow-500/80"></div><div className="w-3 h-3 rounded-full bg-green-500/80"></div></div>
+                <div className="mx-auto text-[11px] font-mono text-slate-500">puppeteer-engine</div>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-5 font-mono text-[13px] text-green-400 leading-relaxed scroll-smooth">
+                {logs.length > 0 ? logs.map((log, index) => {
+                  let textColor = "text-green-400";
+                  if (log.includes('❌') || log.includes('Error')) textColor = "text-red-400";
+                  else if (log.includes('⚠️')) textColor = "text-yellow-400";
+                  else if (log.includes('✅') || log.includes('DONE')) textColor = "text-emerald-300 font-semibold";
+                  else if (log.includes('===') || log.includes('---')) textColor = "text-blue-300";
+
+                  return (
+                    <div key={index} className={`mb-1 opacity-90 truncate ${textColor}`}>
+                      <span className="text-slate-600 mr-3 text-[10px]">➜</span>{log}
+                    </div>
+                  );
+                }) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500/50 p-6 text-center select-none h-full mt-24">
+                    <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    <p className="text-sm font-medium tracking-wide">SYSTEM READY</p>
+                    <p className="text-xs mt-1">Awaiting target keywords to commence extraction.</p>
                   </div>
-                );
-              })}
-              <div ref={logEndRef} className="h-4" />
+                )}
+                <div ref={logEndRef} className="h-4" />
+              </div>
             </div>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-500/50 p-6 text-center select-none">
-              <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-              <p className="text-sm font-medium tracking-wide">SYSTEM READY</p>
-              <p className="text-xs mt-1">Awaiting target keywords to commence extraction.</p>
-            </div>
-          )}
+          </div>
         </div>
+      )}
 
-      </div>
+      {/* --- TAB CONTENT: DATABASE CRM --- (Unchanged) */}
+      {activeTab === 'database' && (
+        <div className="flex-1 flex flex-col p-4 md:p-6 min-h-0 w-full overflow-hidden bg-white">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 shrink-0 gap-4">
+            <div className="flex items-center gap-4">
+              <div className="flex bg-slate-100 rounded p-1">
+                <button onClick={() => setDbView('active')} className={`px-4 py-1.5 rounded text-xs font-bold transition-colors ${dbView === 'active' ? 'bg-white shadow text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>Active Leads</button>
+                <button onClick={() => setDbView('trash')} className={`px-4 py-1.5 rounded text-xs font-bold transition-colors ${dbView === 'trash' ? 'bg-red-500 shadow text-white' : 'text-slate-500 hover:text-slate-700'}`}>🗑️ Trash</button>
+              </div>
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-slate-400 text-xs">🔍</span>
+                <input type="text" placeholder="Filter name, email, notes..." value={filterText} onChange={(e) => setFilterText(e.target.value)} className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded shadow-sm focus:ring-1 focus:ring-blue-500/50 outline-none w-64"/>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={fetchLeads} className="px-3 py-1.5 bg-white border border-slate-300 text-slate-600 rounded text-xs hover:bg-slate-50 font-medium shadow-sm">↻ Refresh Data</button>
+              <button disabled={exportingToSheets || sortedLeads.length === 0} onClick={exportCurrentViewToSheets} className="px-4 py-1.5 bg-green-600 text-white border border-green-700 rounded text-xs hover:bg-green-700 font-bold shadow-sm disabled:opacity-50">
+                {exportingToSheets ? 'Exporting...' : '📊 Export to Google Sheets'}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 border border-slate-200 rounded-lg shadow-sm overflow-hidden flex flex-col min-h-0 bg-white">
+            {isLoadingDB ? (
+              <div className="flex-1 flex justify-center items-center text-slate-500 text-sm">Loading database...</div>
+            ) : sortedLeads.length === 0 ? (
+              <div className="flex-1 flex flex-col justify-center items-center text-slate-400 text-sm"><span className="text-3xl mb-2">{dbView === 'trash' ? '🗑️' : '📭'}</span><p>{filterText ? 'No leads match your filter.' : dbView === 'trash' ? 'Trash is empty.' : 'No active leads.'}</p></div>
+            ) : (
+              <div className="overflow-auto flex-1 h-full w-full">
+                <table className="min-w-max w-full text-left border-collapse">
+                  <thead className="bg-[#f8fafc] sticky top-0 z-10 shadow-[0_1px_2px_rgba(0,0,0,0.05)] text-[10px] uppercase font-bold text-slate-500">
+                    <tr>
+                      <th className="px-3 py-3 w-8">Mail</th>
+                      {['Company Name', 'Email', 'Send Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
+                        <th key={header} onClick={() => handleSort(header)} className="px-3 py-3 cursor-pointer hover:bg-slate-200 whitespace-nowrap">{header} {sortConfig?.key === header ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}</th>
+                      ))}
+                      <th className="px-3 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {sortedLeads.map((lead) => {
+                      const idx = lead.originalIndex;
+                      return (
+                        <tr key={idx} className={`hover:bg-blue-50/40 transition-colors ${lead.Emailed === 'Yes' ? 'bg-slate-50/50' : ''}`}>
+                          <td className="px-3 py-2 text-center" onClick={(e) => { e.stopPropagation(); toggleEmailed(idx, lead.Emailed); }}>
+                            <input type="checkbox" checked={lead.Emailed === 'Yes'} readOnly className="w-4 h-4 cursor-pointer accent-blue-600" title="Mark as emailed"/>
+                          </td>
+                          <td className="px-3 py-2 font-semibold text-slate-800 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead['Company Name'])}>{lead['Company Name']}</td>
+                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead.Email)}>{lead.Email || '-'}</td>
+                          <td className="px-3 py-2 font-medium">{lead.Email ? <a href={`mailto:${lead.Email}?subject=Partnership with Blueblood Exports`} onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:text-blue-800 hover:underline">✉️ Email</a> : '-'}</td>
+                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead.Phone)}>{lead.Phone || '-'}</td>
+                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead.Country)}>{lead.Country || '-'}</td>
+                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead['Business Type'])}>{lead['Business Type'] || '-'}</td>
+                          <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead['Target Audience'])}>{lead['Target Audience'] || '-'}</td>
+                          <td className="px-3 py-2 text-blue-600 underline">
+                            {lead.Instagram ? <a href={lead.Instagram} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>IG ↗</a> : '-'}
+                          </td>
+                          <td className="px-3 py-2 text-slate-500 whitespace-normal min-w-[250px] cursor-pointer hover:bg-blue-100 transition-colors border-x border-transparent hover:border-blue-200" title="Click to copy" onClick={() => copyData(lead.Notes)}>{lead.Notes || '-'}</td>
+                          <td className="px-3 py-2 font-mono text-center font-bold" onClick={() => copyData(lead['Lead Score'])}>{lead['Lead Score']}</td>
+                          <td className="px-3 py-2">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider cursor-pointer hover:opacity-80 transition-opacity ${lead.Chance === 'High' ? 'bg-green-100 text-green-700' : lead.Chance === 'Medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-200 text-slate-600'}`} onClick={() => copyData(lead.Chance)}>{lead.Chance || 'Low'}</span>
+                          </td>
+                          <td className="px-3 py-2 text-right whitespace-nowrap">
+                            {dbView === 'active' ? (
+                              <button onClick={(e) => { e.stopPropagation(); moveToTrash(idx); }} className="text-red-500 hover:text-white border border-red-500 hover:bg-red-500 px-2.5 py-1 rounded text-[10px] font-bold transition-all">TRASH</button>
+                            ) : (
+                              <div className="flex items-center gap-1 justify-end">
+                                <button onClick={(e) => { e.stopPropagation(); restoreLead(idx); }} className="text-green-600 hover:text-white border border-green-600 hover:bg-green-600 px-2.5 py-1 rounded text-[10px] font-bold transition-all">RESTORE</button>
+                                <button onClick={(e) => { e.stopPropagation(); permanentDelete(idx); }} className="text-white border border-red-600 bg-red-600 hover:bg-red-700 px-2.5 py-1 rounded text-[10px] font-bold transition-all">DELETE</button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="bg-[#f8fafc] border-t border-slate-200 px-4 py-2 flex justify-between items-center text-[10px] uppercase font-bold text-slate-500 shrink-0">
+              <span>Showing {sortedLeads.length} {dbView === 'active' ? 'Active' : 'Trashed'} Leads</span>
+              <span>CSV File Verified</span>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
