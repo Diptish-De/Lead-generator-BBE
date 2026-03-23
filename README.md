@@ -10,7 +10,7 @@ Automated lead generation scraper for handicrafts & home decor export business.
 
 ### Step 1: Apps Script Setup (5 minutes)
 
-1. **Open your Google Sheet**: [Lead-BBE](https://docs.google.com/spreadsheets/d/1kYExdz-8bJR2c4fT--f564PXZQh2RwcU5eg51fmded4)
+1. **Open your Google Sheet**: [Lead-BBE]
 
 2. **Open Apps Script editor**:
    - Click **Extensions** → **Apps Script**
