@@ -1,11 +1,14 @@
 {
   "name": "lead-generator-bbe",
   "version": "1.0.0",
-  "description": "Lead generation scraper for Blueblood Exports - handicrafts & home decor",
+  "description": "Lead generation scraper for BlueBloodExports - handicrafts & home decor",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "start:api": "node src/server.js",
+    "server": "node src/server.js",
+    "client": "cd dashboard && npm run dev",
+    "scheduler": "node src/scheduler.js",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "start": "npm run dev",
     "test": "node src/test.js"
   },
   "dependencies": {
@@ -16,10 +19,17 @@
     "csv-writer": "^1.6.0",
     "dotenv": "^16.6.1",
     "express": "^5.2.1",
+    "imap-simple": "^5.1.0",
+    "mailparser": "^3.9.6",
+    "node-cron": "^4.2.1",
     "puppeteer": "^21.6.1",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "telegraf": "^4.16.3"
   },
   "author": "BBE",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
 }

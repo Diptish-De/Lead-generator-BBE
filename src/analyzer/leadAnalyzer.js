@@ -46,6 +46,17 @@ const TARGET_AUDIENCE_KEYWORDS = {
   'Eco-Conscious': ['sustainable', 'eco', 'green', 'ethical', 'conscious', 'responsible', 'fair trade'],
 };
 
+// ── Data Cleaning Utilities ─────────────────────────────────────────
+
+function cleanCompanyName(name) {
+  if (!name) return '';
+  // Remove common business suffixes to make it feel human
+  return name
+    .replace(/\s+(LLC|Inc|Ltd|Limited|Corp|Corporation|PLC|GmbH|S\.A\.)\.?$/i, '')
+    .replace(/,\s*(LLC|Inc|Ltd|Limited|Corp|Corporation|PLC|GmbH|S\.A\.)\.?$/i, '')
+    .trim();
+}
+
 // ── Analysis Functions ─────────────────────────────────────────────
 
 function detectCategory(text, keywordMap) {
@@ -88,10 +99,10 @@ function detectMultipleStyles(text) {
   return styles.length > 0 ? styles.slice(0, 3).join(', ') : 'General';
 }
 
-function generateNotes(companyName, businessType, productStyle, text) {
+function generateNotes(companyName, businessType, productStyle, text, metaDescription) {
+  if (metaDescription) return metaDescription.slice(0, 150);
   const lowerText = text.toLowerCase().slice(0, 2000);
 
-  // Try to find a meta description or first meaningful sentence
   const descPatterns = [
     /(?:we are|we're|our company|we specialize|specializing in|offering|providing|dedicated to)\s+([^.!?]{20,120})/i,
     /(?:your|the) (?:premier|leading|trusted|finest|best|top|go-to)\s+([^.!?]{15,100})/i,
@@ -123,15 +134,15 @@ function calculateScore(data, businessType, targetAudience) {
   if (data.decisionMaker) score += 5;
   if (data.instagram) score += 2;
   if (data.phones && data.phones.length > 0) score += 1;
-  
+
   // High value matches
   if (['Premium Buyers', 'Design Professionals', 'Gift Buyers'].includes(targetAudience)) score += 2;
   if (['Boutique', 'Interior Designer', 'Lifestyle Brand'].includes(businessType)) score += 3;
-  
+
   let chance = 'Low';
   if (score >= 8) chance = 'High';
   else if (score >= 5) chance = 'Medium';
-  
+
   return { score, chance };
 }
 
@@ -139,15 +150,18 @@ function calculateScore(data, businessType, targetAudience) {
 
 function analyzeLead(extractedData) {
   const text = extractedData.pageText || '';
+  const rawName = extractedData.companyName || '';
+  const companyName = cleanCompanyName(rawName);
 
   const businessType = detectCategory(text, BUSINESS_TYPE_KEYWORDS);
   const productStyle = detectMultipleStyles(text);
   const targetAudience = detectCategory(text, TARGET_AUDIENCE_KEYWORDS);
-  const notes = generateNotes(extractedData.companyName, businessType, productStyle, text);
-  
+  const notes = generateNotes(extractedData.companyName, businessType, productStyle, text, extractedData.metaDescription);
+
   const { score, chance } = calculateScore(extractedData, businessType, targetAudience);
 
   return {
+    companyName,
     businessType,
     productStyle,
     targetAudience,
@@ -165,7 +179,7 @@ async function analyzeLeadAI(extractedData, rulesBasedAnalysis) {
     if (text.length < 100) return rulesBasedAnalysis;
 
     const prompt = `
-      You are an expert B2B lead generation analyst for 'Blueblood Exports', an Indian company supplying high-end, artisan-made handicrafts, home decor, and furniture.
+      You are an expert B2B lead generation analyst for 'BlueBloodExports', an Indian company supplying high-end, artisan-made handicrafts, home decor, and furniture.
       Read the following website text of a company we just scraped.
       
       Determine if this company is a good wholesale buyer for our products.
@@ -176,11 +190,15 @@ async function analyzeLeadAI(extractedData, rulesBasedAnalysis) {
         "businessType": "Boutique / Interior Designer / E-commerce / etc",
         "productStyle": "Boho / Luxury / Minimal / etc",
         "targetAudience": "Premium Buyers / Eco-Conscious / etc",
-        "notes": "A 1-sentence analytical summary of what this company does and why they are a good or bad fit for Blueblood Exports.",
+        "notes": "A 1-sentence analytical summary of what this company does and why they are a good or bad fit for BlueBloodExports.",
         "leadScore": (Number 1-10 based purely on context. 10 = perfect match looking for artisans, 1 = completely unrelated),
         "chance": "High / Medium / Low"
       }
       
+      Business Metadata:
+      "Title: ${extractedData.companyName || ''}"
+      "Description: ${extractedData.metaDescription || ''}"
+
       Website Text to Analyze:
       "${text}"
     `;
@@ -188,7 +206,7 @@ async function analyzeLeadAI(extractedData, rulesBasedAnalysis) {
     const result = await model.generateContent(prompt);
     let output = result.response.text();
     output = output.replace(/```json/g, '').replace(/```/g, '').trim();
-    
+
     const parsedData = JSON.parse(output);
     return parsedData;
   } catch (error) {
@@ -213,24 +231,24 @@ async function analyzeAllLeads(extractedDataList) {
 
   for (let i = 0; i < extractedDataList.length; i++) {
     const data = extractedDataList[i];
-    
+
     // 1. Get baseline rules-based score (also serves as robust fallback)
     const baseAnalysis = analyzeLead(data);
-    
+
     // 2. Upgrade to AI analysis
     const analysis = await analyzeLeadAI(data, baseAnalysis);
-    
+
     // 3. Keep purely technical data-density bonuses from tracking (Emails, Phones, IG, Decision Maker)
     let bonus = 0;
     if (data.emails && data.emails.length > 0) bonus += 2;
     if (data.decisionMaker) bonus += 3;
     if (data.phones && data.phones.length > 0) bonus += 1;
     if (data.instagram) bonus += 1;
-    
+
     // Add bonus to base or AI score, capping at 10
     const finalScore = Math.min(10, (analysis.leadScore || baseAnalysis.leadScore || 1) + bonus);
     const finalChance = finalScore >= 8 ? 'High' : (finalScore >= 5 ? 'Medium' : 'Low');
-    
+
     analysis.leadScore = finalScore;
     analysis.chance = finalChance;
 
@@ -259,7 +277,7 @@ async function analyzeAllLeads(extractedDataList) {
       ...data,
       ...analysis,
     });
-    
+
     // Hard rate limit to protect free tier
     if (process.env.GEMINI_API_KEY && i < extractedDataList.length - 1) {
       await new Promise(r => setTimeout(r, 4000));

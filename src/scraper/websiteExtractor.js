@@ -3,15 +3,28 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const cheerio = require('cheerio');
 const config = require('../config');
+const {
+  retryWithBackoff,
+  CircuitBreaker,
+  DomainCache,
+  processWithConcurrency,
+  normalizeUrl,
+  getDomain,
+  randomDelay,
+  randomUserAgent
+} = require('../utils');
 
-// ── Helpers ────────────────────────────────────────────────────────
-function randomDelay([min, max]) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
+// Initialize circuit breaker and domain cache
+const circuitBreaker = new CircuitBreaker({
+  failureThreshold: config.circuitBreakerThreshold,
+  resetTimeout: config.circuitBreakerReset,
+  maxCircuits: config.maxCircuits,
+});
 
-function randomUserAgent() {
-  return config.userAgents[Math.floor(Math.random() * config.userAgents.length)];
-}
+const domainCache = config.enableDomainCache ? new DomainCache(config.domainCacheFile, {
+  maxSize: config.maxCacheSize,
+  maxAge: config.maxCacheAge,
+}) : null;
 
 // ── Email Extraction ───────────────────────────────────────────────
 function extractEmails(text) {
@@ -87,6 +100,30 @@ function extractInstagram(text, html) {
   return [...new Set(matches)][0] || '';
 }
 
+// ── Pinterest Extraction ───────────────────────────────────────────
+function extractPinterest(text, html) {
+  const hrefRegex = /https?:\/\/(?:www\.)?pinterest\.com\/([a-zA-Z0-9_\.]+)\/?/g;
+  const matches = [];
+  let match;
+  const combined = (html || '') + ' ' + (text || '');
+  while ((match = hrefRegex.exec(combined)) !== null) {
+    const user = match[1].toLowerCase();
+    if (!['pin', 'categories', 'explore'].includes(user)) {
+      matches.push(`https://pinterest.com/${user}`);
+    }
+  }
+  return [...new Set(matches)][0] || '';
+}
+
+// ── Meta Tags Extraction ───────────────────────────────────────────
+function extractMetaTags($) {
+  return {
+    description: $('meta[name="description"]').attr('content') || $('meta[property="og:description"]').attr('content') || '',
+    keywords: $('meta[name="keywords"]').attr('content') || '',
+    title: $('title').text() || ''
+  };
+}
+
 // ── Company Name Extraction ────────────────────────────────────────
 function extractCompanyName($, url) {
   // Priority 1: og:site_name
@@ -102,7 +139,7 @@ function extractCompanyName($, url) {
       const data = JSON.parse($(schemaScripts[i]).html());
       if (data.name && typeof data.name === 'string' && data.name.length < 80) return cleanCompanyName(data.name);
       if (data.organization?.name && typeof data.organization.name === 'string') return cleanCompanyName(data.organization.name);
-    } catch {}
+    } catch { }
   }
 
   // Priority 3: <title> tag
@@ -170,7 +207,7 @@ function extractLocation($, url, text) {
         country = addr.addressCountry || '';
         if (city || country) return { city, country };
       }
-    } catch {}
+    } catch { }
   }
 
   // TLD-based country detection
@@ -192,7 +229,7 @@ function extractLocation($, url, text) {
         break;
       }
     }
-  } catch {}
+  } catch { }
 
   // Regex patterns for common location strings
   const locationPatterns = [
@@ -224,7 +261,7 @@ function extractLocation($, url, text) {
 // ── Find Contact/About Pages ───────────────────────────────────────
 function findSubPages($, baseUrl) {
   const pages = [];
-  const contactPatterns = /\b(contact|about|about-us|contact-us|get-in-touch|reach-us|our-story|team)\b/i;
+  const contactPatterns = /\b(contact|about|support|team|reach|story|who-we-are|faq|find-us)\b/i;
 
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href');
@@ -232,21 +269,23 @@ function findSubPages($, baseUrl) {
 
     try {
       const fullUrl = new URL(href, baseUrl).href;
-      const path = new URL(fullUrl).pathname.toLowerCase();
+      const parsed = new URL(fullUrl);
+      const path = parsed.pathname.toLowerCase();
 
-      if (contactPatterns.test(path) && fullUrl.startsWith('http')) {
+      // Only same-domain links
+      if (parsed.hostname === new URL(baseUrl).hostname && contactPatterns.test(path)) {
         pages.push(fullUrl);
       }
-    } catch {}
+    } catch { }
   });
 
-  return [...new Set(pages)].slice(0, config.maxPagesToCheck);
+  return [...new Set(pages)].slice(0, config.maxPagesToCheck || 3);
 }
 
 // ── Extract All Data from a Single Website ─────────────────────────
 async function extractFromWebsite(browser, url) {
   const page = await browser.newPage();
-  await page.setUserAgent(randomUserAgent());
+  await page.setUserAgent(randomUserAgent(config));
   await page.setViewport({ width: 1366, height: 768 });
 
   // Block images, fonts, media for speed
@@ -254,9 +293,9 @@ async function extractFromWebsite(browser, url) {
   page.on('request', req => {
     const type = req.resourceType();
     if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
-      req.abort().catch(() => {});
+      req.abort().catch(() => { });
     } else {
-      req.continue().catch(() => {});
+      req.continue().catch(() => { });
     }
   });
 
@@ -274,8 +313,17 @@ async function extractFromWebsite(browser, url) {
   };
 
   try {
-    // Visit main page
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.siteTimeout });
+    // Visit main page with retry logic
+    await retryWithBackoff(
+      async () => {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.siteTimeout });
+      },
+      {
+        maxRetries: config.maxRetries,
+        baseDelay: config.retryBaseDelay,
+        maxDelay: config.retryMaxDelay,
+      }
+    );
     await new Promise(r => setTimeout(r, 1500));
 
     let html = await page.content();
@@ -284,22 +332,41 @@ async function extractFromWebsite(browser, url) {
 
     data.companyName = extractCompanyName($, url);
     data.emails.push(...extractEmails(text));
-    data.emails.push(...extractEmails(html)); // Also check raw HTML for mailto: links
+    data.emails.push(...extractEmails(html));
     data.phones.push(...extractPhones(text));
     data.instagram = extractInstagram(text, html);
+    data.pinterest = extractPinterest(text, html);
+    const meta = extractMetaTags($);
+    data.metaDescription = meta.description;
+    
     const loc = extractLocation($, url, text);
     data.city = loc.city;
     data.country = loc.country;
     data.decisionMaker = extractDecisionMaker(text);
-    data.pageText = text.slice(0, 5000); // Keep first 5000 chars for analysis
+    data.pageText = `${meta.title} ${meta.description} ${text.slice(0, 5000)}`;
     data.html = html;
 
     // Find and visit contact/about pages
     const subPages = findSubPages($, url);
+    if (subPages.length > 0) {
+      console.log(`    🔍 Found ${subPages.length} relevant sub-pages, checking...`);
+    }
 
     for (const subUrl of subPages) {
       try {
-        await page.goto(subUrl, { waitUntil: 'domcontentloaded', timeout: config.siteTimeout });
+        const subPath = new URL(subUrl).pathname;
+        console.log(`    🚶 Visiting ${subPath}...`);
+        // Retry sub-page navigation with fewer retries
+        await retryWithBackoff(
+          async () => {
+            await page.goto(subUrl, { waitUntil: 'domcontentloaded', timeout: config.siteTimeout });
+          },
+          {
+            maxRetries: Math.min(2, config.maxRetries),
+            baseDelay: config.retryBaseDelay,
+            maxDelay: config.retryMaxDelay,
+          }
+        );
         await new Promise(r => setTimeout(r, 1000));
 
         html = await page.content();
@@ -329,6 +396,7 @@ async function extractFromWebsite(browser, url) {
 
   } catch (err) {
     console.log(`    ⚠️  Failed to extract from ${url}: ${err.message}`);
+    throw err; // Re-throw for circuit breaker
   } finally {
     await page.close();
   }
@@ -337,44 +405,154 @@ async function extractFromWebsite(browser, url) {
 }
 
 // ── Main: Visit all URLs and extract data ──────────────────────────
-async function extractFromAllWebsites(urls) {
+async function extractFromAllWebsites(urls, options = {}) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('🌐 STEP 2: Visiting websites & extracting data...');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
-  });
+  const concurrency = options.concurrency || config.scrapingConcurrency || 3;
+  console.log(`  ⚡ Parallel processing enabled: ${concurrency} concurrent browsers\n`);
 
-  const results = [];
-
-  for (let i = 0; i < urls.length; i++) {
-    const url = urls[i];
-    const domain = new URL(url).hostname.replace(/^www\./, '');
-    console.log(`  [${i + 1}/${urls.length}] 🔗 ${domain}`);
-
-    try {
-      const data = await extractFromWebsite(browser, url);
-      results.push(data);
-
-      const emailCount = data.emails.length;
-      const phoneCount = data.phones.length;
-      console.log(`    📧 ${emailCount} email(s), 📞 ${phoneCount} phone(s), 📍 ${data.country || '?'}\n`);
-    } catch (err) {
-      console.log(`    ❌ Skipped: ${err.message}\n`);
-    }
-
-    // Delay between sites
-    if (i < urls.length - 1) {
-      const delay = randomDelay(config.delayBetweenSites);
-      await new Promise(r => setTimeout(r, delay));
-    }
+  // Show cache stats if enabled
+  if (domainCache) {
+    const stats = domainCache.stats();
+    console.log(`  📦 Domain cache: ${stats.fresh} fresh, ${stats.stale} stale, ${stats.total} total (max: ${stats.maxSize})\n`);
   }
 
-  await browser.close();
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+    });
+  } catch (err) {
+    console.log(`  ❌ Failed to launch browser: ${err.message}`);
+    return [];
+  }
 
-  console.log(`\n📊 Successfully extracted data from ${results.length}/${urls.length} sites\n`);
+  const results = [];
+  const skipped = [];
+  const failed = [];
+  let completed = 0;
+  let browserCrashed = false;
+
+  // Graceful shutdown handler
+  const shutdown = async () => {
+    console.log('\n  ⚠️  Received shutdown signal, closing browser...');
+    try {
+      if (browser && !browserCrashed) {
+        await browser.close();
+      }
+    } catch (e) {
+      console.log('  ⚠️  Error closing browser:', e.message);
+    }
+    console.log('  💾 Cache saved. Exiting gracefully.\n');
+  };
+
+  // Handle interrupt signals
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // Create a processor function for each URL
+  const processUrl = async (url) => {
+    if (browserCrashed) return null; // Stop processing if browser crashed
+
+    const domain = getDomain(url);
+    const normalizedDomain = normalizeUrl(domain);
+
+    // Check domain cache
+    if (domainCache && domainCache.has(normalizedDomain)) {
+      const cachedData = domainCache.get(normalizedDomain);
+      if (cachedData) {
+        return { ...cachedData, website: url, fromCache: true };
+      }
+    }
+
+    // Check circuit breaker
+    const circuitStatus = circuitBreaker.getStatus(domain);
+    if (circuitStatus.status === 'open') {
+      skipped.push({ url, reason: 'circuit_open' });
+      return null;
+    }
+
+    try {
+      // Execute with circuit breaker protection
+      const data = await circuitBreaker.execute(domain, async () => {
+        return await extractFromWebsite(browser, url);
+      });
+
+      // Cache successful results (only if has emails)
+      if (domainCache && data && data.emails && data.emails.length > 0) {
+        domainCache.set(normalizedDomain, data);
+      }
+
+      return data;
+    } catch (err) {
+      if (err.message.includes('Circuit breaker open')) {
+        skipped.push({ url, reason: 'circuit_open' });
+      } else {
+        failed.push({ url, error: err.message });
+      }
+      return null;
+    }
+  };
+
+  try {
+    // Process URLs in batches with concurrency control
+    for (let i = 0; i < urls.length; i += concurrency) {
+      if (browserCrashed) break; // Stop if browser crashed
+
+      const batch = urls.slice(i, i + concurrency);
+      const batchResults = await Promise.all(batch.map(processUrl));
+
+      completed += batch.length;
+
+      // Filter out nulls and add to results
+      const validResults = batchResults.filter(r => r !== null && r !== undefined);
+      results.push(...validResults);
+
+      // Log progress with results
+      const successCount = validResults.length;
+      const cacheCount = validResults.filter(r => r.fromCache).length;
+      console.log(`  📊 [${completed}/${urls.length}] ✅${successCount} (📦${cacheCount}) ❌${failed.length} ⏭️${skipped.length}`);
+
+      // Delay between batches to be polite
+      if (i + concurrency < urls.length && !browserCrashed) {
+        const delay = randomDelay(config.delayBetweenSites);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  } catch (err) {
+    console.log(`\n  ❌ Batch processing error: ${err.message}`);
+  }
+
+  // Close browser gracefully
+  try {
+    if (browser && !browser.isClosed()) {
+      await browser.close();
+    }
+  } catch (err) {
+    console.log(`  ⚠️  Browser close error: ${err.message}`);
+  }
+
+  // Show circuit breaker stats
+  const cbStats = circuitBreaker.getStats();
+  console.log(`\n  🔶 Circuit breaker stats: ${cbStats.open} open, ${cbStats.halfOpen} half-open, ${cbStats.closed} closed`);
+
+  // Summary
+  console.log(`\n📊 Extraction Summary:`);
+  console.log(`  ✅ Successful: ${results.length}`);
+  console.log(`  📦 From cache: ${results.filter(r => r.fromCache).length}`);
+  console.log(`  ⏭️  Skipped (circuit): ${skipped.length}`);
+  console.log(`  ❌ Failed: ${failed.length}`);
+  console.log(`  📊 Total processed: ${urls.length}\n`);
+
+  // Log some failed URLs for debugging
+  if (failed.length > 0 && failed.length <= 10) {
+    console.log(`  Failed URLs:`);
+    failed.forEach(f => console.log(`    - ${f.url}: ${f.error}`));
+  }
+
   return results;
 }
 

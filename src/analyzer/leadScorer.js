@@ -2,12 +2,18 @@
 const RELEVANT_TYPES = [
   'Home Decor Store', 'Interior Designer', 'Boutique', 'Gift Shop',
   'Handicraft Store', 'Art Gallery', 'Furniture Store', 'Lifestyle Brand',
-  'Wholesale/Distributor', 'E-commerce',
+  'Wholesale/Distributor', 'E-commerce', 'Concept Store', 'Design Studio'
 ];
 
-// ── High-value style keywords ──────────────────────────────────────
-const HIGH_VALUE_STYLES = ['Handmade', 'Luxury', 'Ethnic', 'Traditional', 'Boho', 'Sustainable', 'Rustic'];
-const MEDIUM_VALUE_STYLES = ['Contemporary', 'Minimal', 'Industrial'];
+// ── High-value styles (based on handicraft/decor trends) ───────────
+const HIGH_VALUE_STYLES = ['Handmade', 'Luxury', 'Ethnic', 'Traditional', 'Boho', 'Sustainable', 'Rustic', 'Artisan'];
+const MEDIUM_VALUE_STYLES = ['Contemporary', 'Minimal', 'Industrial', 'Vintage', 'Modern'];
+
+// ── Generic Email Domains (penalty) ───────────────────────────────
+const GENERIC_DOMAINS = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com'];
+
+// ── Import utilities for fuzzy deduplication ─────────────────────
+const { normalizeUrl, deduplicateLeads } = require('../utils');
 
 // ── Email Validation ───────────────────────────────────────────────
 function isValidEmail(email) {
@@ -16,58 +22,63 @@ function isValidEmail(email) {
   return regex.test(email.trim());
 }
 
-// ── Lead Scoring ───────────────────────────────────────────────────
+// ── Lead Scoring (Scale 1-10 internally, clamped 1-5 for output) ───
 function scoreLead(lead) {
   let score = 0;
 
   // +1: Has valid email
-  if (lead.emails && lead.emails.length > 0 && isValidEmail(lead.emails[0])) {
-    score += 1;
+  const email = (lead.emails && lead.emails.length > 0) ? lead.emails[0] : null;
+  if (email && isValidEmail(email)) {
+    score += 2;
+
+    // -1 Penalty for generic/personal domains (B2B prefers business domains)
+    const domain = email.split('@')[1]?.toLowerCase();
+    if (GENERIC_DOMAINS.includes(domain)) {
+      score -= 1;
+    }
   }
 
-  // +1: Relevant business type
-  if (RELEVANT_TYPES.includes(lead.businessType)) {
-    score += 1;
+  // +2: VIP business types (Boutiques and Interior Designers are highest conversion)
+  if (['Boutique', 'Interior Designer', 'Concept Store'].includes(lead.businessType)) {
+    score += 3;
+  } else if (RELEVANT_TYPES.includes(lead.businessType)) {
+    score += 1.5;
   }
 
-  // +1: High-value product style
+  // +Style weighting
   const styles = (lead.productStyle || '').split(',').map(s => s.trim());
   if (styles.some(s => HIGH_VALUE_STYLES.includes(s))) {
-    score += 1;
+    score += 2;
   } else if (styles.some(s => MEDIUM_VALUE_STYLES.includes(s))) {
-    score += 0.5;
-  }
-
-  // +1: Has clear contact info (email + phone or email + location)
-  if (lead.emails?.length > 0 && (lead.phones?.length > 0 || lead.country)) {
     score += 1;
   }
 
-  // +1: Strong fit for handicraft export (handmade/artisan keywords in text)
-  const text = (lead.pageText || '').toLowerCase();
-  const exportFitKeywords = ['handmade', 'handcrafted', 'artisan', 'artisanal', 'handicraft',
-    'hand woven', 'hand carved', 'hand painted', 'fair trade', 'ethically sourced',
-    'imported', 'global', 'international', 'sourcing', 'wholesale'];
-  const fitCount = exportFitKeywords.filter(kw => text.includes(kw)).length;
-  if (fitCount >= 3) score += 1;
-  else if (fitCount >= 1) score += 0.5;
+  // +1: Decision Maker found (HUGE conversion booster)
+  if (lead.decisionMaker) {
+    score += 3;
+  }
 
-  // Round to nearest integer, clamp 1-5
-  score = Math.round(score);
-  score = Math.max(1, Math.min(5, score));
+  // +1: Location context (specific countries they export to regularly)
+  if (['USA', 'UK', 'Europe', 'Canada', 'Australia'].includes(lead.country)) {
+    score += 1;
+  }
 
-  return score;
+  // Final scale: divide by 2 to get a nice 1-5 range with decimals
+  let finalScore = Math.round(score / 2 * 2) / 2; // Round to nearest 0.5
+  finalScore = Math.max(1, Math.min(5, finalScore));
+
+  return finalScore;
 }
 
 // ── Chance Label ───────────────────────────────────────────────────
 function getChanceLabel(score) {
   if (score >= 4) return 'High';
-  if (score >= 2) return 'Medium';
+  if (score >= 2.5) return 'Medium';
   return 'Low';
 }
 
 // ── Filter & Score All Leads ───────────────────────────────────────
-function scoreAndFilterLeads(leads) {
+function scoreAndFilterLeads(leads, options = {}) {
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('⭐ STEP 4: Scoring & filtering leads...');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -76,16 +87,28 @@ function scoreAndFilterLeads(leads) {
   let filtered = 0;
 
   for (const lead of leads) {
-    // Filter: must have at least one valid email
-    if (!lead.emails || lead.emails.length === 0 || !isValidEmail(lead.emails[0])) {
+    // Filter: mandatory email if strictMode is on
+    const email = lead.emails && lead.emails.length > 0 && isValidEmail(lead.emails[0]) ? lead.emails[0] : null;
+    const hasSocial = !!lead.instagram || !!lead.pinterest || (lead.phones && lead.phones.length > 0);
+
+    if (options.strictMode && !email) {
       filtered++;
-      console.log(`  ❌ Filtered (no valid email): ${lead.companyName || lead.website}`);
+      console.log(`  ❌ Strict Filter (no email): ${lead.companyName || lead.website}`);
       continue;
     }
 
-    // Filter: must be a relevant business type
-    if (!RELEVANT_TYPES.includes(lead.businessType) && lead.businessType !== 'Other') {
-      // Still keep "Other" — they might be relevant
+    if (!email && !hasSocial) {
+      filtered++;
+      console.log(`  ❌ Filtered (no contact points): ${lead.companyName || lead.website}`);
+      continue;
+    }
+
+    // Filter: must NOT be an obvious non-fit (e.g., SEO, Marketing, Real Estate)
+    const junkTypes = ['Marketing Agency', 'SEO Agency', 'Real Estate', 'Consultancy'];
+    if (junkTypes.includes(lead.businessType)) {
+      filtered++;
+      console.log(`  ❌ Filtered (Irrelevant niche): ${lead.companyName} (${lead.businessType})`);
+      continue;
     }
 
     const score = scoreLead(lead);
@@ -105,6 +128,9 @@ function scoreAndFilterLeads(leads) {
       notes: lead.notes || '',
       leadScore: score,
       chance: chance,
+      dateScraped: new Date().toISOString(),
+      status: 'New',
+      emailed: 'false',
     });
 
     console.log(`  ✅ ${lead.companyName || 'Unknown'} → Score: ${score}/5 (${chance})`);
@@ -113,15 +139,8 @@ function scoreAndFilterLeads(leads) {
   // Sort by score (highest first)
   scored.sort((a, b) => b.leadScore - a.leadScore);
 
-  // Deduplicate by domain + email
-  const seen = new Set();
-  const deduped = scored.filter(lead => {
-    const domain = lead.website.replace(/https?:\/\/(www\.)?/, '').replace(/\/.*$/, '');
-    const key = `${domain}|${lead.email}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // Use fuzzy deduplication that handles URL variations
+  const deduped = deduplicateLeads(scored);
 
   console.log(`\n📊 Results: ${deduped.length} qualified leads (${filtered} filtered out, ${scored.length - deduped.length} duplicates removed)\n`);
 

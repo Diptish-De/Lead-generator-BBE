@@ -10,7 +10,7 @@ function printBanner() {
   console.log(`
 ╔══════════════════════════════════════════════════════╗
 ║                                                      ║
-║   🏪  LEAD GENERATOR — Blueblood Exports (BBE)      ║
+║   🏪  LEAD GENERATOR — BlueBloodExports (BBE)        ║
 ║   Handicrafts & Home Decor Lead Scraper              ║
 ║                                                      ║
 ║   Searches → Extracts → Analyzes → Scores → Exports  ║

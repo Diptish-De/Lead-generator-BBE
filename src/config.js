@@ -55,12 +55,33 @@ module.exports = {
   // ── Output ─────────────────────────────────────────────────────
   outputDir: 'output',
   outputFile: 'output/leads.csv',
+  domainCacheFile: 'output/scraped_domains.json',
 
   // ── CSV Column Headers ─────────────────────────────────────────
   csvHeaders: [
     'Company Name', 'Website', 'Email', 'Email Valid', 'Country', 'City',
     'Business Type', 'Product Style', 'Target Audience',
     'Instagram', 'Phone', 'Decision Maker', 'Notes', 'Lead Score', 'Chance', 'Date Scraped',
-    'Status', 'Emailed', 'Last Contacted'
+    'Status', 'Emailed', 'Last Contacted',
+    // Outreach fields
+    'Assigned Email', 'Sent At', 'Last Follow-up', 'Contact Name'
   ],
+
+  // ── Performance Settings ────────────────────────────────────────
+  scrapingConcurrency: 3,          // Number of websites to scrape in parallel
+  maxPagesToCheck: 3,               // Visit up to 3 sub-pages (Contact, About, etc.)
+  enableDomainCache: true,          // Skip recently scraped domains (7-day cache)
+  maxCacheAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+  maxCacheSize: 10000,             // Max domains to cache
+  maxCircuits: 1000,               // Max circuit breaker entries (prevents memory leak)
+
+  // ── Extraction Settings ────────────────────────────────────────
+  socialMediaPlatforms: ['instagram', 'facebook', 'pinterest', 'linkedin'],
+  extractMetaTags: true,            // Get description/keywords for better scoring
+  maxRetries: 3,                    // Max retry attempts for failed requests
+  retryBaseDelay: 1000,            // Base delay in ms (doubles each retry)
+  retryMaxDelay: 10000,            // Max delay cap in ms
+  circuitBreakerThreshold: 5,      // Failures before circuit opens
+  circuitBreakerReset: 60000,      // Circuit reset time in ms (1 minute)
+  siteTimeout: 15000,              // Timeout per site in ms
 };
