@@ -9,19 +9,19 @@ if (process.env.GEMINI_API_KEY) {
   model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 }
 
-// ── Keyword Dictionaries ───────────────────────────────────────────
+// ── Keyword Dictionaries (Export Business — find importers & buyers) ──
 
 const BUSINESS_TYPE_KEYWORDS = {
-  'Home Decor Store': ['home decor', 'home décor', 'home furnishing', 'home accessories', 'homeware', 'homewares', 'home goods'],
+  'Importer': ['importer', 'importing', 'import company', 'import house', 'buy from india', 'sourcing from india', 'international sourcing'],
+  'Wholesale Distributor': ['wholesale', 'distributor', 'distribution', 'trade partner', 'b2b', 'bulk order', 'bulk supply', 'wholesale buyer'],
+  'Retail Buyer': ['home decor', 'home décor', 'home furnishing', 'home accessories', 'homeware', 'homewares', 'home goods', 'retail chain'],
   'Interior Designer': ['interior design', 'interior designer', 'interior decoration', 'interior studio', 'design studio'],
   'Boutique': ['boutique', 'curated shop', 'concept store', 'lifestyle store', 'lifestyle boutique'],
-  'Gift Shop': ['gift shop', 'gift store', 'museum shop', 'museum store', 'gallery shop', 'souvenir'],
-  'Furniture Store': ['furniture', 'furnishing', 'sofa', 'table', 'chair', 'cabinet'],
-  'Art Gallery': ['art gallery', 'gallery', 'art dealer', 'fine art', 'contemporary art'],
-  'Handicraft Store': ['handicraft', 'handcraft', 'artisan', 'handmade goods', 'craft store', 'craft shop'],
-  'Lifestyle Brand': ['lifestyle brand', 'lifestyle', 'wellness', 'mindful living'],
-  'Wholesale/Distributor': ['wholesale', 'distributor', 'trade only', 'b2b', 'bulk order'],
-  'E-commerce': ['online store', 'online shop', 'e-commerce', 'ecommerce', 'shop online'],
+  'Gift Shop': ['gift shop', 'gift store', 'museum shop', 'museum store', 'gallery shop', 'souvenir', 'corporate gifting'],
+  'Furniture Dealer': ['furniture', 'furnishing', 'furniture importer', 'furniture wholesale', 'furniture buyer'],
+  'Handicraft Store': ['handicraft', 'handcraft', 'artisan', 'handmade goods', 'craft store', 'craft shop', 'fair trade'],
+  'Trade Platform': ['trade directory', 'trade leads', 'trade portal', 'b2b marketplace', 'tradekey', 'go4worldbusiness', 'fibre2fashion'],
+  'E-commerce': ['online store', 'online shop', 'e-commerce', 'ecommerce', 'shop online', 'marketplace seller'],
 };
 
 const PRODUCT_STYLE_KEYWORDS = {
@@ -33,16 +33,16 @@ const PRODUCT_STYLE_KEYWORDS = {
   'Contemporary': ['contemporary', 'modern', 'current', 'trendy', 'cutting-edge'],
   'Rustic': ['rustic', 'farmhouse', 'country', 'barn', 'reclaimed', 'natural wood'],
   'Industrial': ['industrial', 'loft', 'urban', 'metal', 'raw', 'exposed'],
-  'Ethnic': ['ethnic', 'tribal', 'african', 'indian', 'moroccan', 'mexican', 'persian', 'oriental'],
+  'Ethnic': ['ethnic', 'tribal', 'african', 'indian', 'moroccan', 'mexican', 'persian', 'oriental', 'dhokra', 'terracotta'],
   'Sustainable': ['sustainable', 'eco-friendly', 'eco friendly', 'organic', 'fair trade', 'recycled', 'upcycled'],
 };
 
 const TARGET_AUDIENCE_KEYWORDS = {
-  'Premium Buyers': ['luxury', 'premium', 'high-end', 'exclusive', 'designer', 'bespoke', 'custom', 'couture', 'affluent'],
-  'General Customers': ['affordable', 'everyday', 'budget', 'value', 'family', 'home essentials'],
+  'Wholesale Buyers': ['wholesale', 'bulk', 'b2b', 'trade', 'distributor', 'reseller', 'dealer', 'importer'],
+  'Retail Chains': ['retail chain', 'multiple stores', 'franchise', 'chain stores', 'department store'],
   'Design Professionals': ['interior designer', 'architect', 'trade program', 'to the trade', 'design professional', 'specifier'],
+  'Premium Buyers': ['luxury', 'premium', 'high-end', 'exclusive', 'designer', 'bespoke', 'custom', 'couture'],
   'Gift Buyers': ['gift', 'present', 'wedding registry', 'corporate gift', 'occasion', 'celebration'],
-  'Collectors': ['collector', 'collection', 'limited edition', 'rare', 'one of a kind', 'unique piece'],
   'Eco-Conscious': ['sustainable', 'eco', 'green', 'ethical', 'conscious', 'responsible', 'fair trade'],
 };
 
@@ -179,19 +179,23 @@ async function analyzeLeadAI(extractedData, rulesBasedAnalysis) {
     if (text.length < 100) return rulesBasedAnalysis;
 
     const prompt = `
-      You are an expert B2B lead generation analyst for 'BlueBloodExports', an Indian company supplying high-end, artisan-made handicrafts, home decor, and furniture.
+      You are an expert B2B export lead analyst for 'BlueBloodExports', an Indian company that EXPORTS high-end, artisan-made handicrafts, home decor, and furniture.
       Read the following website text of a company we just scraped.
       
-      Determine if this company is a good wholesale buyer for our products.
+      Determine if this company is a potential IMPORTER or WHOLESALE BUYER for our products. We are looking for:
+      - Companies that import home decor, handicrafts, furniture, or artisan goods
+      - Wholesale distributors or trade buyers
+      - Companies actively sourcing from international suppliers
+      - B2B trade portal listings of importers
       
       Respond STRICTLY with ONLY a raw JSON object (no markdown formatting, no code blocks like \`\`\`json).
       Format exactly like this:
       {
-        "businessType": "Boutique / Interior Designer / E-commerce / etc",
-        "productStyle": "Boho / Luxury / Minimal / etc",
-        "targetAudience": "Premium Buyers / Eco-Conscious / etc",
-        "notes": "A 1-sentence analytical summary of what this company does and why they are a good or bad fit for BlueBloodExports.",
-        "leadScore": (Number 1-10 based purely on context. 10 = perfect match looking for artisans, 1 = completely unrelated),
+        "businessType": "Importer / Wholesale Distributor / Retail Buyer / Trade Platform / etc",
+        "productStyle": "Boho / Luxury / Minimal / Ethnic / etc",
+        "targetAudience": "Wholesale Buyers / Retail Chain / Interior Designers / etc",
+        "notes": "A 1-sentence analytical summary of what this company imports/buys and why they are a good or bad match for an Indian handicraft exporter.",
+        "leadScore": (Number 1-10 based purely on context. 10 = active importer looking for Indian handicrafts, 1 = completely unrelated),
         "chance": "High / Medium / Low"
       }
       

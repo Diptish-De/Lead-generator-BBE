@@ -1,16 +1,25 @@
 require('dotenv').config();
 
 module.exports = {
-  // ── Search Queries ──────────────────────────────────────────────
+  // ── Search Queries (Export Business — target importers & buyers) ──
   searchQueries: [
-    'home decor store USA contact email',
-    'interior designer Europe contact us',
-    'boutique decor shop UK email',
-    'museum gift shop USA contact',
-    'handmade home decor store contact email',
-    'luxury home accessories boutique contact',
-    'artisan decor shop Europe email',
-    'handicraft retail store USA contact',
+    // B2B Trade Portals — where importers look for exporters
+    'site:tradekey.com "handicraft" OR "home decor" importers buyers contact',
+    'site:go4worldbusiness.com "handicraft" OR "home decor" importers',
+    'site:exportersindia.com "handicraft" OR "furniture" buyers',
+    'site:tradeindia.com "home decor" OR "handicraft" buy leads',
+    'site:fibre2fashion.com home decor furnishing buyers importers',
+    // Direct importer search queries
+    'home decor importers USA contact email wholesale',
+    'handicraft importers Europe wholesale buyers email',
+    'furniture importers UK wholesale contact',
+    'artisan home decor wholesale buyers Canada contact',
+    'Indian handicraft wholesale buyers Australia contact email',
+    'bulk home decor buyers USA wholesale inquiry',
+    'import handicraft from India wholesale distributors',
+    'fair trade home decor importers Europe email',
+    'handmade furniture importers USA wholesale',
+    'ethnic decor wholesale buyers UK contact email',
   ],
 
   // ── Scraping Settings ──────────────────────────────────────────

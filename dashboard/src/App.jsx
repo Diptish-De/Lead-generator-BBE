@@ -19,11 +19,12 @@ function App() {
   
   // Scraper State
   const [topics, setTopics] = useState({
-    'Home Decor Boutiques': true,
-    'Interior Designers': true,
-    'Furniture Stores': false,
-    'Handicraft Retailers': false,
-    'Museum Gift Shops': false,
+    'Handicraft Importers': true,
+    'Home Decor Wholesale Buyers': true,
+    'Furniture Importers': false,
+    'Fair Trade Distributors': false,
+    'B2B Trade Portal Leads': false,
+    'Ethnic Decor Importers': false,
   });
   
   const [regions, setRegions] = useState({
@@ -32,6 +33,7 @@ function App() {
     'Europe': false,
     'Australia': false,
     'Canada': false,
+    'Middle East': false,
   });
 
   const [customQueries, setCustomQueries] = useState('');
@@ -54,23 +56,14 @@ function App() {
   const [outreachSelectedLeads, setOutreachSelectedLeads] = useState([]);
   const [catalogUrl, setCatalogUrl] = useState(localStorage.getItem('bbe_catalog_url') || '');
   const [activeTemplateId, setActiveTemplateId] = useState(0);
+  const [isSendingDrafts, setIsSendingDrafts] = useState(false);
   const [userTemplates, setUserTemplates] = useState(() => {
     const saved = localStorage.getItem('bbe_templates');
     return saved ? JSON.parse(saved) : [
       { 
-        name: 'Initial Pitch', 
-        subject: 'Curating [Style] pieces for [Company]?', 
-        body: 'Hi [Name],\n\nI was browsing [Company] in [City] and loved your focus on [Style] items. It\'s a really unique and well-curated collection.\n\nI\'m reaching out from BlueBloodExports — we specialize in supplying high-end, artisan-made Indian handicrafts and home decor that perfectly fits your aesthetic. We focus on ethical, small-batch production that resonates with boutique retailers.\n\nAre you open to seeing our latest lookbook for the upcoming season? No strings attached, just thought our pieces might be a great fit for your store.\n\nBest regards,\nBlueBloodExports' 
-      },
-      { 
-        name: 'Follow-up (Day 3)', 
-        subject: 'Re: Curating [Style] pieces for [Company]?', 
-        body: 'Hi [Name],\n\nJust wanted to quickly bump this. I know you\'re likely busy with [Company], but I genuinely think our artisan [Style] collection would be a perfect fit for your shelves.\n\nWould you like me to send over our digital catalog? It highlights our most popular pieces for this season.\n\nBest regards,\nBlueBloodExports' 
-      },
-      { 
-        name: 'Final Follow-up (Day 7)', 
-        subject: 'Question about [Company]\'s [Style] curation', 
-        body: 'Hi [Name],\n\nI\'m reaching out one last time regarding [Company]. We\'re currently closing our export bookings for the next quarter and I didn\'t want you to miss out on our newest [Style] designs.\n\nIf you\'re not looking for new suppliers right now, no problem! We can always chat later down the road.\n\nBest regards,\nBlueBloodExports' 
+        name: 'Outreach Template', 
+        subject: 'Handcrafted Indian Decor for [Company]', 
+        body: 'Hi [Name],\n\nI came across [Company] and was impressed by your collection of [Style] products.\n\nWe are BlueBloodExports — an Indian export company specializing in artisan-made handicrafts, home decor, and furniture. We supply wholesale to importers and distributors worldwide.\n\nOur product range includes:\n• Dhokra metal craft\n• Terracotta décor\n• Hand-carved wooden furniture\n• Handwoven textiles & rugs\n\nWould you be open to receiving our wholesale catalogue? We offer competitive FOB/CIF pricing and can customize as per your requirements.\n\nLooking forward to hearing from you.\n\nBest regards,\nBlueBloodExports' 
       }
     ];
   });
@@ -159,16 +152,47 @@ function App() {
   };
 
   const handleBatchSend = async () => {
-    if (outreachSelectedLeads.length > 5) {
-      if (!window.confirm(`You are about to open ${outreachSelectedLeads.length} Gmail tabs. They will automatically save as drafts. Proceed?`)) return;
-    }
+    if (outreachSelectedLeads.length === 0) return;
+    if (!window.confirm(`You are about to create ${outreachSelectedLeads.length} Gmail draft(s). Proceed?`)) return;
+
+    setIsSendingDrafts(true);
+    const sentList = [];
 
     for (const index of outreachSelectedLeads) {
-      handleIndividualSend(index);
-      // Brief delay to avoid browser blocking multiple popups
+      const lead = dbLeads[index];
+      if (!lead || !lead.Email) continue;
+
+      const template = userTemplates[activeTemplateId];
+      let subject = parseVariables(template.subject, lead);
+      let body = parseVariables(template.body, lead);
+      if (catalogUrl) body += `\n\nOur Catalog: ${catalogUrl}`;
+
+      const gmailLink = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(lead.Email)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      window.open(gmailLink, '_blank');
+
+      sentList.push({ company: lead['Company Name'] || '-', email: lead.Email });
+
+      // Auto-mark as contacted
+      await updateStatus(index, 'Contacted');
       await new Promise(r => setTimeout(r, 800));
     }
+
+    // Send Telegram notification with the list of drafted leads
+    if (sentList.length > 0) {
+      try {
+        await fetch('http://localhost:4000/api/notify-drafts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ drafts: sentList })
+        });
+      } catch (err) {
+        console.error('Telegram notification failed:', err);
+      }
+      showNotification(`✅ ${sentList.length} Gmail drafts created + Telegram notified!`);
+    }
+
     setOutreachSelectedLeads([]);
+    setIsSendingDrafts(false);
   };
 
   // Poll Scraper Logs

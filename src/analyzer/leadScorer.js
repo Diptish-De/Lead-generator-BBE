@@ -1,8 +1,8 @@
-// ── Relevant Business Types (keep these) ───────────────────────────
+// ── Relevant Business Types (keep these — export-focused) ──────────
 const RELEVANT_TYPES = [
-  'Home Decor Store', 'Interior Designer', 'Boutique', 'Gift Shop',
-  'Handicraft Store', 'Art Gallery', 'Furniture Store', 'Lifestyle Brand',
-  'Wholesale/Distributor', 'E-commerce', 'Concept Store', 'Design Studio'
+  'Importer', 'Wholesale Distributor', 'Retail Buyer', 'Interior Designer',
+  'Boutique', 'Gift Shop', 'Handicraft Store', 'Furniture Dealer',
+  'Trade Platform', 'E-commerce', 'Concept Store', 'Design Studio'
 ];
 
 // ── High-value styles (based on handicraft/decor trends) ───────────
@@ -38,8 +38,8 @@ function scoreLead(lead) {
     }
   }
 
-  // +2: VIP business types (Boutiques and Interior Designers are highest conversion)
-  if (['Boutique', 'Interior Designer', 'Concept Store'].includes(lead.businessType)) {
+  // +2: VIP business types (Importers and Wholesale Distributors are highest conversion for exporters)
+  if (['Importer', 'Wholesale Distributor', 'Retail Buyer'].includes(lead.businessType)) {
     score += 3;
   } else if (RELEVANT_TYPES.includes(lead.businessType)) {
     score += 1.5;

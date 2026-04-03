@@ -11,6 +11,7 @@ const config = require('./config');
 
 const outreachEngine = require('./outreach/outreachEngine');
 const { checkReplies } = require('./outreach/replyChecker');
+const { sendNotification } = require('./utils/telegram');
 
 const app = express();
 app.use(cors());
@@ -92,10 +93,16 @@ app.post('/api/suggest-keywords', async (req, res) => {
 
   try {
     const prompt = `
-      You are a B2B lead generation expert for 'BlueBloodExports'. We export Indian artisan handicrafts, luxury home decor, and small-batch sustainable products.
-      Based on these user topics: [${topics.join(', ')}] and custom context: "${custom || ''}", suggest 10 specific, high-intent Google search queries to find potential B2B buyers like boutiques, gift shops, and interior design studios.
+      You are a B2B export lead generation expert for 'BlueBloodExports', an Indian company that EXPORTS artisan handicrafts, home decor, and handcrafted furniture.
+      We need to find IMPORTERS, wholesale BUYERS, and DISTRIBUTORS who want to buy from Indian exporters.
       
-      Queries should be formatted for search engines (e.g., 'luxury home decor boutique in London').
+      Based on these user topics: [${topics.join(', ')}] and custom context: "${custom || ''}", suggest 10 specific, high-intent Google search queries to find potential IMPORTERS and wholesale BUYERS on B2B trade platforms (TradeKey, Go4WorldBusiness, Kompass, ThomasNet, etc.) and direct buyer search queries.
+      
+      Focus on queries like:
+      - "handicraft importers [country] wholesale buyers email"
+      - "site:tradekey.com home decor importers"
+      - "wholesale Indian handicraft buyers [region]"
+      
       Return ONLY a JSON array of strings. No markdown.
     `;
 
@@ -598,6 +605,25 @@ app.post('/api/leads/bulk-delete', async (req, res) => {
 });
 
 const PORT = 4000;
+
+// NOTIFY DRAFTS — sends Telegram notification when user creates Gmail drafts
+app.post('/api/notify-drafts', async (req, res) => {
+  const { drafts } = req.body;
+  if (!drafts || !Array.isArray(drafts) || drafts.length === 0) {
+    return res.json({ success: false, message: 'No drafts provided' });
+  }
+
+  const lines = drafts.map((d, i) => `${i + 1}. *${d.company}* — ${d.email}`).join('\n');
+  const message = `✉️ *BBE Outreach — ${drafts.length} Drafts Created*\n\n${lines}\n\n📅 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
+
+  try {
+    await sendNotification(message);
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✅ Backend Scraper API running on http://localhost:${PORT}`);
 });
