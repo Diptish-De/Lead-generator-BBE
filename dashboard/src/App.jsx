@@ -16,6 +16,11 @@ function App() {
   const [sessionLeadUrls, setSessionLeadUrls] = useState(new Set());
   const [dbSelectedLeads, setDbSelectedLeads] = useState([]);
   const [isCheckingReplies, setIsCheckingReplies] = useState(false);
+  const [isAddLeadModalOpen, setIsAddLeadModalOpen] = useState(false);
+  const [addLeadTab, setAddLeadTab] = useState('manual');
+  const [newLeadForm, setNewLeadForm] = useState({ 'Company Name': '', Email: '', Website: '', Phone: '', Country: '', City: '', 'Business Type': '', Notes: '' });
+  const [importFile, setImportFile] = useState(null);
+  const [isAddingLead, setIsAddingLead] = useState(false);
   
   // Scraper State
   const [topics, setTopics] = useState({
@@ -57,14 +62,44 @@ function App() {
   const [catalogUrl, setCatalogUrl] = useState(localStorage.getItem('bbe_catalog_url') || '');
   const [activeTemplateId, setActiveTemplateId] = useState(0);
   const [isSendingDrafts, setIsSendingDrafts] = useState(false);
+  const [isEmailSettingsOpen, setIsEmailSettingsOpen] = useState(false);
+  const [outreachBatchStatus, setOutreachBatchStatus] = useState(null);
+  const [currentBatchId, setCurrentBatchId] = useState(null);
+  
+  // Email Configuration
+  const [emailConfig, setEmailConfig] = useState(() => {
+    const saved = localStorage.getItem('bbe_email_config');
+    return saved ? JSON.parse(saved) : { email: '', password: '', name: 'BlueBloodExports' };
+  });
+
+  // Attachments & Signature
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [signatureFile, setSignatureFile] = useState(null);
+
   const [userTemplates, setUserTemplates] = useState(() => {
     const saved = localStorage.getItem('bbe_templates');
-    return saved ? JSON.parse(saved) : [
+    const b2bProfessional = {
+      name: 'B2B Professional Outreach',
+      subject: 'B2B Collaboration Inquiry — BlueBloodExports',
+      body: 'Dear [Name],\n\nI hope you are doing well.\n\nWe are BlueBloodExports, an India-based export company specializing in handcrafted furniture, home décor, and traditional handicrafts for international importers, wholesalers, retailers, and sourcing partners.\n\nOur product range includes:\n• Handcrafted wooden furniture\n• Dhokra metal crafts\n• Terracotta décor\n• Handwoven textiles & rugs\n• Traditional Indian handicrafts & lifestyle products\n\nWe focus on premium craftsmanship, competitive FOB/CIF pricing, reliable delivery, and customization based on buyer requirements.\n\nPlease find our product catalogue attached for your reference.\n\nYou can also learn more about us at:\nhttps://www.bluebloodexports.com/\n\nIf you are interested, we would be happy to discuss pricing, product details, or potential business opportunities.\n\nYou can contact us through:\n• hello@bluebloodexports.com\n• +91 78120 28686\n• Or simply reply to this email\n\nLooking forward to hearing from you.\n\nBest regards,\nBlueBloodExports'
+    };
+
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // Seed the new professional template if it doesn't exist in their saved list
+      if (!parsed.some(t => t.name === 'B2B Professional Outreach')) {
+        return [...parsed, b2bProfessional];
+      }
+      return parsed;
+    }
+
+    return [
       { 
-        name: 'Outreach Template', 
+        name: 'Standard Outreach', 
         subject: 'Handcrafted Indian Decor for [Company]', 
         body: 'Hi [Name],\n\nI came across [Company] and was impressed by your collection of [Style] products.\n\nWe are BlueBloodExports — an Indian export company specializing in artisan-made handicrafts, home decor, and furniture. We supply wholesale to importers and distributors worldwide.\n\nOur product range includes:\n• Dhokra metal craft\n• Terracotta décor\n• Hand-carved wooden furniture\n• Handwoven textiles & rugs\n\nWould you be open to receiving our wholesale catalogue? We offer competitive FOB/CIF pricing and can customize as per your requirements.\n\nLooking forward to hearing from you.\n\nBest regards,\nBlueBloodExports' 
-      }
+      },
+      b2bProfessional
     ];
   });
 
@@ -72,6 +107,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('bbe_templates', JSON.stringify(userTemplates));
   }, [userTemplates]);
+
+  useEffect(() => {
+    localStorage.setItem('bbe_email_config', JSON.stringify(emailConfig));
+  }, [emailConfig]);
 
   useEffect(() => {
     localStorage.setItem('bbe_catalog_url', catalogUrl);
@@ -151,48 +190,101 @@ function App() {
     await updateStatus(index, 'Contacted');
   };
 
-  const handleBatchSend = async () => {
-    if (outreachSelectedLeads.length === 0) return;
-    if (!window.confirm(`You are about to create ${outreachSelectedLeads.length} Gmail draft(s). Proceed?`)) return;
+  const pollOutreachStatus = (batchId) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`http://localhost:4000/api/outreach/status/${batchId}`);
+        const data = await res.json();
+        setOutreachBatchStatus(data);
+        if (data.isComplete) {
+          clearInterval(interval);
+          setIsSendingDrafts(false);
+          showNotification(`🏁 Outreach batch ${batchId} complete!`, 'success');
+        }
+      } catch (err) {
+        console.error('Polling failed:', err);
+        clearInterval(interval);
+      }
+    }, 2000);
+  };
+
+  const handleSendToApproval = async () => {
+    if (outreachSelectedLeads.length === 0) {
+      showNotification('Please select at least one lead.', 'error');
+      return;
+    }
+    
+    if (!emailConfig.email || !emailConfig.password) {
+      showNotification('Please configure your Email and App Password in Settings.', 'error');
+      setIsEmailSettingsOpen(true);
+      return;
+    }
+
+    if (!window.confirm(`Send ${outreachSelectedLeads.length} outreach emails now?`)) return;
 
     setIsSendingDrafts(true);
-    const sentList = [];
+    setOutreachBatchStatus({ current: 0, total: outreachSelectedLeads.length, sent: 0, failed: 0, errors: [], isComplete: false });
+    
+    try {
+      const formData = new FormData();
+      
+      const drafts = outreachSelectedLeads.map(index => {
+        const lead = dbLeads[index];
+        const template = userTemplates[activeTemplateId];
+        let body = parseVariables(template.body, lead);
+        if (catalogUrl) body += `\n\nOur Catalog: ${catalogUrl}`;
+        
+        return {
+          to: lead.Email,
+          company: lead['Company Name'] || '-',
+          subject: parseVariables(template.subject, lead),
+          body: body
+        };
+      });
 
-    for (const index of outreachSelectedLeads) {
-      const lead = dbLeads[index];
-      if (!lead || !lead.Email) continue;
+      formData.append('drafts', JSON.stringify(drafts));
+      formData.append('config', JSON.stringify(emailConfig));
+      
+      // Add attachments
+      attachmentFiles.forEach(file => {
+        formData.append('files', file);
+      });
+      
+      // Add signature if exists
+      if (signatureFile) {
+        formData.append('signature', signatureFile);
+      }
 
-      const template = userTemplates[activeTemplateId];
-      let subject = parseVariables(template.subject, lead);
-      let body = parseVariables(template.body, lead);
-      if (catalogUrl) body += `\n\nOur Catalog: ${catalogUrl}`;
+      const response = await fetch('http://localhost:4000/api/drafts/create', {
+        method: 'POST',
+        body: formData,
+      });
 
-      const gmailLink = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(lead.Email)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-      window.open(gmailLink, '_blank');
-
-      sentList.push({ company: lead['Company Name'] || '-', email: lead.Email });
-
-      // Auto-mark as contacted
-      await updateStatus(index, 'Contacted');
-      await new Promise(r => setTimeout(r, 800));
-    }
-
-    // Send Telegram notification with the list of drafted leads
-    if (sentList.length > 0) {
-      try {
-        await fetch('http://localhost:4000/api/notify-drafts', {
+      const data = await response.json();
+      
+      if (data.success) {
+        setCurrentBatchId(data.batchId);
+        pollOutreachStatus(data.batchId);
+        
+        // Auto-mark as contacted
+        const indicesToUpdate = outreachSelectedLeads;
+        await fetch('http://localhost:4000/api/leads/bulk-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ drafts: sentList })
+          body: JSON.stringify({ indices: indicesToUpdate, updates: { Status: 'Contacted', 'Last Contacted': new Date().toISOString() } })
         });
-      } catch (err) {
-        console.error('Telegram notification failed:', err);
+        
+        fetchLeads();
+        // Keep selection until user clears it or batch starts
+      } else {
+        showNotification(`Error: ${data.error || 'Failed to start outreach'}`, 'error');
+        setIsSendingDrafts(false);
       }
-      showNotification(`✅ ${sentList.length} Gmail drafts created + Telegram notified!`);
+    } catch (err) {
+      console.error('Outreach flow failed:', err);
+      showNotification('Network error. Is backend running?', 'error');
+      setIsSendingDrafts(false);
     }
-
-    setOutreachSelectedLeads([]);
-    setIsSendingDrafts(false);
   };
 
   // Poll Scraper Logs
@@ -228,6 +320,55 @@ function App() {
   };
 
   // Memoized filter calculation for the database view
+
+  const sortedLeads = React.useMemo(() => {
+    let filtered = dbLeads.map((l, originalIndex) => ({ ...l, originalIndex }));
+
+    filtered = filtered.filter(l => dbView === 'trash' ? l.Status === 'Trashed' : l.Status !== 'Trashed');
+
+    if (filterText.trim()) {
+      const lower = filterText.toLowerCase();
+      filtered = filtered.filter(l =>
+        (l['Company Name'] || '').toLowerCase().includes(lower) ||
+        (l['Email'] || '').toLowerCase().includes(lower) ||
+        (l['Website'] || '').toLowerCase().includes(lower) ||
+        (l['Notes'] || '').toLowerCase().includes(lower) ||
+        (l['Product Style'] || '').toLowerCase().includes(lower) ||
+        (l['City'] || '').toLowerCase().includes(lower)
+      );
+    }
+
+    if (statusFilter !== 'All') {
+      filtered = filtered.filter(l => (l.Status || 'New') === statusFilter);
+    }
+
+    if (chanceFilter !== 'All') {
+      filtered = filtered.filter(l => l.Chance === chanceFilter);
+    }
+
+    if (styleFilter !== 'All') {
+      filtered = filtered.filter(l => (l['Product Style'] || '').includes(styleFilter));
+    }
+
+    if (countryFilter !== 'All') {
+      filtered = filtered.filter(l => (l.Country || 'Unknown') === countryFilter);
+    }
+
+    if (sortConfig !== null) {
+      filtered.sort((a, b) => {
+        let aVal = a[sortConfig.key] || '';
+        let bVal = b[sortConfig.key] || '';
+        if (sortConfig.key === 'Lead Score') {
+          aVal = parseInt(aVal, 10) || 0;
+          bVal = parseInt(bVal, 10) || 0;
+        }
+        if (aVal < bVal) return sortConfig.direction === 'ascending' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'ascending' ? 1 : -1;
+        return 0;
+      });
+    }
+    return filtered;
+  }, [dbLeads, sortConfig, filterText, dbView, statusFilter, chanceFilter, styleFilter, countryFilter]);
   useEffect(() => {
     if (activeTab === 'database') {
       fetchLeads();
@@ -490,55 +631,6 @@ function App() {
     setSortConfig({ key, direction });
   };
 
-  // Compute the final Leads to show
-  const sortedLeads = React.useMemo(() => {
-    let filtered = dbLeads.map((l, originalIndex) => ({ ...l, originalIndex }));
-    
-    filtered = filtered.filter(l => dbView === 'trash' ? l.Status === 'Trashed' : l.Status !== 'Trashed');
-    
-    if (filterText.trim()) {
-      const lower = filterText.toLowerCase();
-      filtered = filtered.filter(l => 
-        (l['Company Name'] || '').toLowerCase().includes(lower) ||
-        (l['Email'] || '').toLowerCase().includes(lower) ||
-        (l['Website'] || '').toLowerCase().includes(lower) ||
-        (l['Notes'] || '').toLowerCase().includes(lower) ||
-        (l['Product Style'] || '').toLowerCase().includes(lower) ||
-        (l['City'] || '').toLowerCase().includes(lower)
-      );
-    }
-
-    if (statusFilter !== 'All') {
-      filtered = filtered.filter(l => (l.Status || 'New') === statusFilter);
-    }
-
-    if (chanceFilter !== 'All') {
-      filtered = filtered.filter(l => l.Chance === chanceFilter);
-    }
-
-    if (styleFilter !== 'All') {
-      filtered = filtered.filter(l => (l['Product Style'] || '').includes(styleFilter));
-    }
-
-    if (countryFilter !== 'All') {
-      filtered = filtered.filter(l => (l.Country || 'Unknown') === countryFilter);
-    }
-
-    if (sortConfig !== null) {
-      filtered.sort((a, b) => {
-        let aVal = a[sortConfig.key] || '';
-        let bVal = b[sortConfig.key] || '';
-        if (sortConfig.key === 'Lead Score') {
-          aVal = parseInt(aVal, 10) || 0;
-          bVal = parseInt(bVal, 10) || 0;
-        }
-        if (aVal < bVal) return sortConfig.direction === 'ascending' ? -1 : 1;
-        if (aVal > bVal) return sortConfig.direction === 'ascending' ? 1 : -1;
-        return 0;
-      });
-    }
-    return filtered;
-  }, [dbLeads, sortConfig, filterText, dbView, statusFilter, chanceFilter, styleFilter, countryFilter]);
 
   const uniqueCountries = React.useMemo(() => {
     const countries = new Set(dbLeads.map(l => l.Country || 'Unknown').filter(Boolean));
@@ -576,268 +668,528 @@ function App() {
       
       {/* GLOBAL HEADER & TABS */}
       <div className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col md:flex-row justify-between items-center shadow-sm z-20 shrink-0 gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            Blueblood <span className="text-blue-600">Exports</span>
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-black tracking-tight text-slate-900">
+            Blueblood <span className="text-premium-indigo">Exports</span>
           </h1>
+          <div className="h-6 w-px bg-slate-200"></div>
+          <button 
+            onClick={() => setIsEmailSettingsOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold transition-all"
+          >
+            ⚙️ Email Settings
+          </button>
         </div>
-        <div className="flex bg-slate-100 p-1 rounded-lg">
+        <div className="flex bg-slate-100 p-1 rounded-xl shadow-inner">
           <button 
             onClick={() => setActiveTab('scraper')}
-            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'scraper' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'scraper' ? 'bg-white shadow-sm text-premium-indigo' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            🔌 Scraper Engine
+            🔌 Scraper
           </button>
           <button 
             onClick={() => setActiveTab('analytics')}
-            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'analytics' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'analytics' ? 'bg-white shadow-sm text-premium-indigo' : 'text-slate-500 hover:text-slate-700'}`}
           >
             📈 Analytics
           </button>
           <button 
             onClick={() => setActiveTab('database')}
-            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'database' ? 'bg-white shadow-sm text-blue-700' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'database' ? 'bg-white shadow-sm text-premium-indigo' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            🗃️ Lead Database
+            🗃️ Database
           </button>
           <button 
             onClick={() => setActiveTab('outreach')}
-            className={`px-6 py-2 rounded-md text-sm font-semibold transition-all ${activeTab === 'outreach' ? 'bg-white shadow-sm text-blue-700' : 'text-green-600 hover:text-green-700 font-bold'}`}
+            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'outreach' ? 'bg-white shadow-sm text-premium-emerald' : 'text-slate-400 hover:text-slate-600'}`}
           >
-            ✉️ Outreach Center
+            ✉️ Outreach
           </button>
         </div>
       </div>
 
       {/* --- TAB CONTENT: OUTREACH CENTER --- */}
       {activeTab === 'outreach' && (
-        <div className="flex-1 flex flex-col md:flex-row min-h-0 w-full overflow-hidden">
-          {/* TEMPLATE MANAGER (LEFT) */}
-          <div className="w-full md:w-[400px] bg-white border-r border-slate-200 flex flex-col shrink-0">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 shrink-0">
-              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">📑 Templates</h2>
-              <p className="text-xs text-slate-500 mt-1">Manage your custom outreach scripts</p>
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 w-full overflow-hidden bg-[#f1f5f9]">
+          {/* LEFT SIDEBAR: Templates & Attachments */}
+          <div className="w-full md:w-[380px] bg-white border-r border-slate-200 flex flex-col shrink-0 overflow-hidden shadow-xl z-10">
+            <div className="p-6 border-b border-slate-100 bg-slate-50/50 shrink-0">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-black text-slate-800">Outreach</h2>
+                <button onClick={addNewTemplate} className="p-2 bg-premium-indigo text-white rounded-lg hover:shadow-lg transition-all">＋</button>
+              </div>
+              <p className="text-[11px] text-slate-400 font-bold uppercase mt-1 tracking-widest">Campaign Orchestration</p>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {userTemplates.map((tpl, i) => (
-                <div key={i} className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${activeTemplateId === i ? 'border-blue-500 bg-blue-50/50 shadow-md' : 'border-slate-100 hover:border-slate-200 bg-white'}`} onClick={() => setActiveTemplateId(i)}>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">{tpl.name}</span>
-                    <button onClick={(e) => { e.stopPropagation(); deleteTemplate(i); }} className="text-slate-300 hover:text-red-500">✕</button>
-                  </div>
-                  <h3 className="font-bold text-slate-800 text-sm mb-1">{tpl.subject}</h3>
-                  <p className="text-[11px] text-slate-600 line-clamp-2 italic">"{tpl.body.substring(0, 100)}..."</p>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+              <div className="px-2 pb-2">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Email Scripts</h3>
+                <div className="space-y-3">
+                  {userTemplates.map((tpl, i) => (
+                    <div 
+                      key={i} 
+                      className={`p-4 rounded-2xl border-2 transition-all group ${activeTemplateId === i ? 'border-premium-indigo bg-indigo-50/30 shadow-sm' : 'border-slate-50 bg-slate-50/50 hover:border-slate-100 hover:bg-white'}`}
+                      onClick={() => setActiveTemplateId(i)}
+                    >
+                      <div className="flex justify-between items-center mb-2">
+                        <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${activeTemplateId === i ? 'bg-premium-indigo text-white' : 'bg-slate-200 text-slate-500'}`}>TPL-0{i+1}</span>
+                        <button onClick={(e) => { e.stopPropagation(); deleteTemplate(i); }} className="text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100">✕</button>
+                      </div>
+                      <h3 className="font-bold text-slate-800 text-sm truncate">{tpl.name}</h3>
+                      <p className="text-[11px] text-slate-500 mt-1 line-clamp-1 italic">"{tpl.subject}"</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
 
-              <button onClick={addNewTemplate} className="w-full py-3 border-2 border-dashed border-slate-200 rounded-lg text-slate-400 text-sm font-semibold hover:border-blue-300 hover:text-blue-500 transition-all flex items-center justify-center gap-2">
-                ＋ Create New Template
-              </button>
-            </div>
+              {/* ASSETS SECTION */}
+              <div className="p-4 bg-slate-900 rounded-3xl mt-6 shadow-lg">
+                <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Digital Assets</h3>
+                
+                <div className="space-y-4">
+                  {/* Multiple PDFs */}
+                  <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase mb-2 block">📄 Project Catalogues (PDFs)</label>
+                    <div className="space-y-2 mb-2">
+                      {attachmentFiles.map((f, i) => (
+                        <div key={i} className="flex justify-between items-center bg-white/10 px-3 py-2 rounded-xl text-[10px] text-white font-medium border border-white/5">
+                          <span className="truncate max-w-[180px]">{f.name}</span>
+                          <button onClick={() => setAttachmentFiles(prev => prev.filter((_, idx) => idx !== i))} className="text-red-400 hover:text-red-300">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                    <label className="flex flex-col items-center justify-center w-full py-4 border-2 border-dashed border-white/10 rounded-2xl cursor-pointer hover:bg-white/5 transition-all text-slate-500 hover:text-slate-300">
+                      <span className="text-lg mb-1">📎</span>
+                      <span className="text-[10px] font-bold uppercase">Add Files</span>
+                      <input type="file" multiple accept="application/pdf" className="hidden" onChange={(e) => setAttachmentFiles(prev => [...prev, ...Array.from(e.target.files)])} />
+                    </label>
+                  </div>
 
-            {/* ATTACHMENT SECTION */}
-            <div className="p-5 border-t border-slate-100 bg-slate-50">
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">📎 Global Attachments (Links)</label>
-              <input 
-                type="text" 
-                placeholder="Paste Catalog URL (Drive/Dropbox)..." 
-                value={catalogUrl}
-                onChange={(e) => setCatalogUrl(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-              <p className="text-[10px] text-slate-400 mt-2">This link will be included at the bottom of all emails.</p>
+                  {/* Letter Signature */}
+                  <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase mb-2 block">✒️ Letter Signature (Stamp/Img)</label>
+                    {signatureFile ? (
+                      <div className="relative group">
+                        <img src={URL.createObjectURL(signatureFile)} className="w-full h-24 object-contain bg-white rounded-2xl p-2 border border-white/10" alt="Signature" />
+                        <button onClick={() => setSignatureFile(null)} className="absolute top-2 right-2 bg-red-600 text-white w-6 h-6 rounded-full flex items-center justify-center shadow-lg opacity-0 group-hover:opacity-100 transition-all text-[10px]">✕</button>
+                      </div>
+                    ) : (
+                      <label className="flex flex-col items-center justify-center w-full py-6 border-2 border-dashed border-white/10 rounded-2xl cursor-pointer hover:bg-white/5 transition-all text-slate-500 hover:text-slate-300">
+                        <span className="text-xl mb-1">✍️</span>
+                        <span className="text-[10px] font-bold uppercase">Upload Signature</span>
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => setSignatureFile(e.target.files[0])} />
+                      </label>
+                    )}
+                  </div>
+                  
+                  {/* Catalog Link */}
+                  <div>
+                    <label className="text-[9px] font-black text-slate-400 uppercase mb-2 block">🔗 Global Drive Link</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. drive.google.com/..." 
+                      value={catalogUrl}
+                      onChange={(e) => setCatalogUrl(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-xs text-white outline-none focus:ring-1 focus:ring-premium-indigo placeholder:text-slate-700"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* SENDING ZONE (RIGHT) */}
-          <div className="flex-1 flex flex-col bg-[#f1f5f9] min-w-0">
-            {/* Template Editor/Preview Overlay if editing */}
-            <div className="p-6 flex flex-col flex-1 overflow-hidden">
-              <div className="mb-6 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-bold text-slate-800">Edit Selected Template</h3>
-                  <span className="text-xs bg-blue-100 text-blue-700 font-bold px-2 py-1 rounded">Autosave Active</span>
-                </div>
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-[10px] uppercase font-black text-slate-400">Subject Line</label>
-                    <input 
-                      type="text" 
-                      value={userTemplates[activeTemplateId]?.subject || ''} 
-                      onChange={(e) => updateTemplate('subject', e.target.value)}
-                      className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-md font-bold text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-black text-slate-400">Email Body</label>
-                    <textarea 
-                      rows="5"
-                      value={userTemplates[activeTemplateId]?.body || ''} 
-                      onChange={(e) => updateTemplate('body', e.target.value)}
-                      className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-md text-sm text-slate-700 font-mono focus:ring-1 focus:ring-blue-500 outline-none resize-none"
-                    />
-                  </div>
-                  <div className="flex gap-2 text-[10px] text-slate-400 font-medium">
-                    <span>Variables:</span>
-                    <code className="bg-slate-100 px-1 rounded text-slate-600">[Name]</code>
-                    <code className="bg-slate-100 px-1 rounded text-slate-600">[Company]</code>
-                    <code className="bg-slate-100 px-1 rounded text-slate-600">[Style]</code>
-                    <code className="bg-slate-100 px-1 rounded text-slate-600">[City]</code>
-                  </div>
-                </div>
-              </div>
-
-              {/* LIVE VERIFICATION PANE */}
-              <div className="mb-6 bg-[#0f172a] p-5 rounded-xl border border-slate-700 shadow-xl overflow-hidden">
-                <div className="flex justify-between items-center mb-3">
-                  <h3 className="text-xs font-black text-blue-400 uppercase tracking-widest flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse"></span>
-                    Live Persona Verification
-                  </h3>
-                  <div className="text-[10px] text-slate-500 font-bold uppercase">Showing preview for the first selected lead</div>
-                </div>
-                
-                {outreachSelectedLeads.length > 0 ? (
-                  <div className="space-y-3 font-mono text-[11px] text-slate-300">
-                    <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
-                      <div className="flex gap-2 mb-1"><span className="text-slate-500 w-16 text-right">To:</span> <span className="text-blue-300">{dbLeads[outreachSelectedLeads[0]].Email}</span></div>
-                      <div className="flex gap-2"><span className="text-slate-500 w-16 text-right">Subject:</span> {parseVariables(userTemplates[activeTemplateId].subject, dbLeads[outreachSelectedLeads[0]])}</div>
-                    </div>
-                    <div className="bg-slate-800/80 p-4 rounded-lg border border-slate-700/50 relative">
-                      <div className="whitespace-pre-wrap leading-relaxed opacity-90">
-                        {parseVariables(userTemplates[activeTemplateId].body, dbLeads[outreachSelectedLeads[0]])}
-                        {catalogUrl && <div className="mt-4 text-emerald-400">Our Catalog: {catalogUrl}</div>}
-                        <div className="mt-4 text-slate-600 border-t border-slate-700 pt-2 italic">Best regards, BlueBloodExports</div>
+          {/* MAIN ZONE: Editor & Target Selection */}
+          <div className="flex-1 flex flex-col min-w-0 bg-[#f8fafc] overflow-hidden">
+            <div className="p-8 flex flex-col h-full overflow-y-auto custom-scrollbar">
+              
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+                {/* EDITOR SECTION */}
+                <div className="lg:col-span-3 space-y-6">
+                  <div className="card-premium p-8 glass-panel animate-fade-in">
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-lg font-black text-slate-800">Email Composer</h3>
+                      <div className="flex gap-2">
+                        <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black border border-emerald-100">Live Preview</span>
                       </div>
-                      {!dbLeads[outreachSelectedLeads[0]]['Decision Maker'] && (
-                        <div className="absolute top-2 right-2 bg-red-900/50 text-red-400 border border-red-500/50 px-2 py-0.5 rounded text-[8px] font-black uppercase shadow-xl">⚠️ Missing Name!</div>
+                    </div>
+                    
+                    <div className="space-y-6">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Subject Line</label>
+                        <input 
+                          type="text" 
+                          value={userTemplates[activeTemplateId]?.subject || ''} 
+                          onChange={(e) => updateTemplate('subject', e.target.value)}
+                          className="w-full input-premium font-bold text-slate-800"
+                        />
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Message Body</label>
+                        <div className="relative">
+                          <textarea 
+                            rows="10"
+                            value={userTemplates[activeTemplateId]?.body || ''} 
+                            onChange={(e) => updateTemplate('body', e.target.value)}
+                            className="w-full input-premium text-sm text-slate-700 font-medium leading-relaxed resize-none h-[300px]"
+                          />
+                          <div className="absolute bottom-4 right-4 flex gap-2">
+                            {['[Name]', '[Company]', '[Style]'].map(v => (
+                              <button key={v} onClick={() => updateTemplate('body', (userTemplates[activeTemplateId]?.body || '') + v)} className="px-2 py-1 bg-white/80 border border-slate-200 rounded text-[9px] font-bold text-slate-500 hover:text-premium-indigo hover:border-premium-indigo transition-all">{v}</button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="lg:col-span-2 space-y-6">
+                  {outreachBatchStatus ? (
+                    <div className="card-premium bg-slate-900 border-slate-800 p-8 shadow-2xl relative overflow-hidden animate-slide-in">
+                      <div className={`absolute top-0 left-0 h-1 bg-gradient-to-r from-blue-500 to-emerald-500 transition-all duration-1000`} style={{ width: `${(outreachBatchStatus.current / outreachBatchStatus.total) * 100}%` }}></div>
+                      
+                      <div className="flex justify-between items-center mb-8">
+                        <div>
+                          <h3 className="text-xl font-black text-white">Batch Progress</h3>
+                          <div className="flex items-center gap-3 mt-1">
+                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">ID: {currentBatchId || 'local'}</p>
+                            <span className="text-slate-700">•</span>
+                            <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">
+                              ⏱️ {outreachBatchStatus.startTime ? Math.floor((Date.now() - outreachBatchStatus.startTime) / 1000) : 0}s elapsed
+                            </p>
+                            {outreachBatchStatus.nextSendIn > 0 && (
+                              <>
+                                <span className="text-slate-700">•</span>
+                                <p className="text-[10px] font-bold text-amber-400 uppercase tracking-widest animate-pulse">
+                                  ⏳ Next send in {outreachBatchStatus.nextSendIn}s
+                                </p>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${outreachBatchStatus.isComplete ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-500/20 text-blue-400 animate-pulse'}`}>
+                          {outreachBatchStatus.isComplete ? 'Complete ✅' : 'Sending... ✉️'}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4 mb-8">
+                        <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                          <p className="text-[9px] font-black text-slate-500 uppercase">Success</p>
+                          <p className="text-2xl font-black text-emerald-400">{outreachBatchStatus.sent}</p>
+                        </div>
+                        <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                          <p className="text-[9px] font-black text-slate-500 uppercase">Failed</p>
+                          <p className="text-2xl font-black text-red-400">{outreachBatchStatus.failed}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-end text-[10px] font-black uppercase tracking-widest">
+                          <span className="text-slate-500">Queue Position</span>
+                          <span className="text-white">{outreachBatchStatus.current} / {outreachBatchStatus.total}</span>
+                        </div>
+                        <div className="h-3 w-full bg-white/5 rounded-full overflow-hidden border border-white/5">
+                          <div 
+                            className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-1000" 
+                            style={{ width: `${(outreachBatchStatus.current / outreachBatchStatus.total) * 100}%` }}
+                          ></div>
+                        </div>
+                      </div>
+
+                      {outreachBatchStatus.errors.length > 0 && (
+                        <div className="mt-8 pt-6 border-t border-white/5">
+                          <p className="text-[9px] font-black text-red-400 uppercase tracking-widest mb-3">Error Log</p>
+                          <div className="max-h-32 overflow-y-auto space-y-2 pr-2 custom-scrollbar-dark">
+                            {outreachBatchStatus.errors.map((err, i) => (
+                              <p key={i} className="text-[10px] text-slate-500 font-mono bg-red-500/5 p-2 rounded-lg border border-red-500/10">{err}</p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {outreachBatchStatus.isComplete && (
+                        <button 
+                          onClick={() => { setOutreachBatchStatus(null); setOutreachSelectedLeads([]); }}
+                          className="w-full mt-8 bg-white/10 hover:bg-white/20 text-white py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
+                        >
+                          Clear & Start New Batch
+                        </button>
                       )}
                     </div>
-                  </div>
-                ) : (
-                  <div className="py-12 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 bg-slate-900/50 rounded-lg text-slate-600 italic text-[11px]">
-                    Select a lead below to see a live draft preview...
-                  </div>
-                )}
+                  ) : (
+                    <div className="card-premium bg-slate-900 border-slate-800 p-8 shadow-2xl relative overflow-hidden h-full flex flex-col animate-fade-in">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-premium-indigo to-premium-emerald opacity-50"></div>
+                      
+                      <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.3em]">Live Verification</h3>
+                        <div className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></div>
+                      </div>
+
+                      {outreachSelectedLeads.length > 0 ? (
+                        <div className="flex-1 flex flex-col">
+                          <div className="space-y-4 font-mono text-[11px] text-slate-400 flex-1 overflow-y-auto custom-scrollbar pr-2">
+                            <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                              <div className="flex gap-3 mb-2"><span className="text-slate-600 w-12 text-right">TO:</span> <span className="text-blue-300 font-bold">{dbLeads[outreachSelectedLeads[0]].Email}</span></div>
+                              <div className="flex gap-3"><span className="text-slate-600 w-12 text-right">SUBJ:</span> <span className="text-white">{parseVariables(userTemplates[activeTemplateId].subject, dbLeads[outreachSelectedLeads[0]])}</span></div>
+                            </div>
+                            
+                            <div className="bg-white/5 p-6 rounded-3xl border border-white/5 relative">
+                              <div className="whitespace-pre-wrap leading-relaxed text-slate-300 text-xs">
+                                {parseVariables(userTemplates[activeTemplateId].body, dbLeads[outreachSelectedLeads[0]])}
+                                
+                                {catalogUrl && (
+                                  <div className="mt-6 p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl text-[10px] text-indigo-300 flex items-center gap-3">
+                                    <span className="text-lg">📁</span>
+                                    <div>
+                                      <p className="font-black uppercase tracking-widest text-[8px]">Wholesale Catalogue Attached</p>
+                                      <p className="truncate max-w-[150px] opacity-60">{catalogUrl}</p>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {attachmentFiles.length > 0 && (
+                                  <div className="mt-4 flex flex-wrap gap-2">
+                                    {attachmentFiles.map((f, i) => (
+                                      <span key={i} className="px-2 py-1 bg-white/5 rounded text-[8px] border border-white/10 uppercase font-black text-slate-500">📎 {f.name}</span>
+                                    ))}
+                                  </div>
+                                )}
+
+                                <div className="mt-8 pt-6 border-t border-white/5">
+                                  {signatureFile ? (
+                                    <img src={URL.createObjectURL(signatureFile)} className="h-16 object-contain invert opacity-60" alt="Signature" />
+                                  ) : (
+                                    <div className="text-slate-600">
+                                      <p className="text-[10px] font-bold">Best regards,</p>
+                                      <p className="text-sm font-black text-white mt-1">BlueBloodExports</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              
+                              {!dbLeads[outreachSelectedLeads[0]]['Decision Maker'] && (
+                                <div className="absolute -top-3 -right-3 bg-red-600 text-white px-3 py-1 rounded-full text-[8px] font-black uppercase shadow-xl animate-bounce">⚠️ Missing Name!</div>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <div className="mt-8 pt-6 border-t border-white/10 flex items-center justify-between">
+                            <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Batch Size: <span className="text-indigo-400">{outreachSelectedLeads.length} Leads</span></div>
+                            <button 
+                              disabled={outreachSelectedLeads.length === 0 || isSendingDrafts}
+                              onClick={handleSendToApproval}
+                              className="bg-premium-indigo hover:bg-indigo-500 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-indigo-500/20 active:scale-95 transition-all disabled:opacity-30 disabled:grayscale flex items-center gap-2"
+                            >
+                              {isSendingDrafts ? <span className="animate-spin text-lg">↻</span> : '📨 Send Batch'}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex-1 flex flex-col items-center justify-center text-slate-700 text-center select-none">
+                          <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-4 border border-white/5">
+                            <span className="text-4xl">📧</span>
+                          </div>
+                          <p className="text-sm font-black uppercase tracking-widest text-slate-500">Awaiting Selection</p>
+                          <p className="text-[10px] font-medium text-slate-600 mt-2 max-w-[180px]">Choose leads from the database below to begin your campaign preview.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-
-              {/* TARGET LEADS SELECTOR */}
-              <div className="flex-[2] bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[350px]">
-                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                  <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                    🎯 Select Leads to Contact
-                    <span className="bg-blue-600 text-white text-[10px] px-2 py-0.5 rounded-full">{outreachSelectedLeads.length} Selected</span>
-                  </h3>
-                  <div className="flex gap-2">
-                    <button onClick={selectAllNewLeads} className="text-[10px] font-bold text-blue-600 hover:underline uppercase">Select All New</button>
-                    <button onClick={() => setOutreachSelectedLeads([])} className="text-[10px] font-bold text-slate-400 hover:underline uppercase">Clear</button>
+              <div className="mt-12 space-y-6">
+                <div className="flex justify-between items-end">
+                  <div>
+                    <h3 className="text-xl font-black text-slate-800">Target Pipeline</h3>
+                    <p className="text-xs text-slate-400 font-bold uppercase mt-1">Refine your selection for this batch</p>
+                  </div>
+                  <div className="flex gap-4 items-center">
+                    <div className="flex bg-slate-100 p-1 rounded-xl">
+                      <button onClick={selectAllNewLeads} className="px-4 py-1.5 text-[10px] font-black text-slate-500 hover:text-premium-indigo uppercase transition-all">Select All New</button>
+                      <button onClick={() => setOutreachSelectedLeads([])} className="px-4 py-1.5 text-[10px] font-black text-slate-400 hover:text-red-500 uppercase transition-all">Clear All</button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="px-4 py-2 border-b border-slate-100 bg-slate-50/30 flex flex-wrap gap-2 items-center">
-                  <div className="relative flex-1 min-w-[150px]">
-                    <span className="absolute left-2 top-1.5 text-slate-400 text-[10px]">🔎</span>
-                    <input type="text" placeholder="Search..." value={filterText} onChange={(e) => setFilterText(e.target.value)} className="pl-6 pr-2 py-1 text-[10px] bg-white border border-slate-200 rounded w-full outline-none focus:ring-1 focus:ring-blue-500 shadow-sm"/>
-                  </div>
-                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="text-[10px] bg-white border border-slate-200 rounded px-2 py-1 outline-none text-slate-500 font-bold shadow-sm">
-                    <option value="All">All Status</option>
-                    <option value="New">New</option>
-                    <option value="Contacted">Contacted</option>
-                  </select>
-                  <select value={chanceFilter} onChange={(e) => setChanceFilter(e.target.value)} className="text-[10px] bg-white border border-slate-200 rounded px-2 py-1 outline-none text-slate-500 font-bold shadow-sm">
-                    <option value="All">All Quality</option>
-                    <option value="High">⭐ High</option>
-                    <option value="Medium">Med</option>
-                  </select>
-                  <select value={styleFilter} onChange={(e) => setStyleFilter(e.target.value)} className="text-[10px] bg-white border border-slate-200 rounded px-2 py-1 outline-none text-slate-500 font-bold shadow-sm max-w-[100px]">
-                    {uniqueStyles.slice(0, 10).map(s => <option key={s} value={s}>{s === 'All' ? 'Style' : s}</option>)}
-                  </select>
-                </div>
-                
-                <div className="flex-1 overflow-y-auto">
-                  <table className="w-full text-left">
-                    <thead className="bg-slate-50 text-[10px] uppercase font-bold text-slate-400 sticky top-0">
-                      <tr>
-                        <th className="px-4 py-2 w-10">
-                          <input 
-                            type="checkbox" 
-                            checked={outreachSelectedLeads.length > 0 && sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).every(l => outreachSelectedLeads.includes(l.originalIndex))}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setOutreachSelectedLeads(sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map(l => l.originalIndex));
-                              } else {
-                                setOutreachSelectedLeads([]);
-                              }
-                            }}
-                            className="w-4 h-4 rounded text-blue-600 cursor-pointer"
-                          />
-                        </th>
-                        <th className="px-4 py-2">Status</th>
-                        <th className="px-4 py-2">Company</th>
-                        <th className="px-4 py-2">Email</th>
-                        <th className="px-4 py-2">Chance</th>
-                        <th className="px-4 py-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-xs text-slate-600">
-                      {sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map((lead) => (
-                        <tr key={lead.originalIndex} className={`hover:bg-blue-50/30 transition-colors ${outreachSelectedLeads.includes(lead.originalIndex) ? 'bg-blue-50/50' : ''}`}>
-                          <td className="px-4 py-2">
+                <div className="card-premium shadow-xl border-slate-100 overflow-hidden bg-white">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50/80 text-[10px] uppercase font-black text-slate-400 tracking-widest border-b border-slate-100">
+                          <th className="px-6 py-4 w-12 text-center">
                             <input 
                               type="checkbox" 
-                              checked={outreachSelectedLeads.includes(lead.originalIndex)}
-                              onChange={() => toggleLeadSelection(lead.originalIndex)}
-                              className="w-4 h-4 rounded text-blue-600 cursor-pointer"
-                            />
-                          </td>
-                          <td className="px-4 py-2">
-                            {lead['Decision Maker'] ? (
-                              <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded text-[8px] font-black uppercase shadow-sm">Verified ✅</span>
-                            ) : (
-                              <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-[8px] font-black uppercase shadow-sm">⚠️ Need Name</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 font-bold text-slate-800">
-                            {lead['Company Name']}
-                            {sessionLeadUrls.has(lead.Website) && (
-                              <span className="ml-2 bg-blue-600 text-white text-[8px] px-1.5 py-0.5 rounded-full uppercase tracking-tighter animate-pulse shadow-sm">NEW</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-2">{lead.Email}</td>
-                          <td className="px-4 py-2">
-                            <span className={`px-2 py-0.5 rounded-[4px] text-[10px] font-bold ${lead.Chance === 'High' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>{lead.Chance}</span>
-                          </td>
-                          <td className="px-4 py-2">
-                            <button 
-                              onClick={() => {
-                                handleIndividualSend(lead.originalIndex);
+                              checked={outreachSelectedLeads.length > 0 && sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).every(l => outreachSelectedLeads.includes(l.originalIndex))}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setOutreachSelectedLeads(sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map(l => l.originalIndex));
+                                } else {
+                                  setOutreachSelectedLeads([]);
+                                }
                               }}
-                              className="text-white bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-full text-[10px] font-bold shadow-sm transition-all uppercase"
-                            >
-                              Draft ✉️
-                            </button>
-                          </td>
+                              className="w-4 h-4 rounded-lg border-slate-300 text-premium-indigo focus:ring-premium-indigo transition-all cursor-pointer"
+                            />
+                          </th>
+                          <th className="px-6 py-4">Status</th>
+                          <th className="px-6 py-4">Company Details</th>
+                          <th className="px-6 py-4">Lead Score</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                
-                {/* ACTION BAR FOOTER */}
-                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
-                  <div className="text-xs text-slate-500">
-                    <span className="font-bold text-slate-800">{outreachSelectedLeads.length}</span> leads ready for batch outreach
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map((lead) => (
+                          <tr key={lead.originalIndex} className={`group transition-all ${outreachSelectedLeads.includes(lead.originalIndex) ? 'bg-indigo-50/30' : 'hover:bg-slate-50'}`}>
+                            <td className="px-6 py-5 text-center">
+                              <input 
+                                type="checkbox" 
+                                checked={outreachSelectedLeads.includes(lead.originalIndex)}
+                                onChange={() => toggleLeadSelection(lead.originalIndex)}
+                                className="w-4 h-4 rounded-lg border-slate-300 text-premium-indigo focus:ring-premium-indigo transition-all cursor-pointer"
+                              />
+                            </td>
+                            <td className="px-6 py-5">
+                              {lead['Decision Maker'] ? (
+                                <span className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Verified ✅</span>
+                              ) : (
+                                <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter">Pending ⚠️</span>
+                              )}
+                            </td>
+                            <td className="px-6 py-5">
+                              <div className="flex flex-col">
+                                <span className="font-black text-slate-800 text-sm">{lead['Company Name']}</span>
+                                <span className="text-[10px] text-slate-400 font-bold uppercase mt-0.5 tracking-tighter">{lead.Email}</span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-5">
+                              <div className="flex items-center gap-2">
+                                <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${parseInt(lead['Lead Score']) >= 7 ? 'bg-premium-indigo' : 'bg-slate-400'}`} style={{width: `${(parseInt(lead['Lead Score']) || 5) * 10}%`}}></div>
+                                </div>
+                                <span className="text-[10px] font-black text-slate-600">{lead['Lead Score'] || '5'}/10</span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-5 text-right">
+                              <button 
+                                onClick={() => {
+                                  toggleLeadSelection(lead.originalIndex);
+                                  // Scroll to editor
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                }}
+                                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black text-slate-600 hover:border-premium-indigo hover:text-premium-indigo transition-all uppercase tracking-widest shadow-sm"
+                              >
+                                {outreachSelectedLeads.includes(lead.originalIndex) ? 'Deselect' : 'Draft ✉️'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EMAIL SETTINGS MODAL */}
+      {isEmailSettingsOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-fade-in">
+          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden border border-white/20 animate-slide-in">
+            <div className="bg-slate-900 p-10 relative overflow-hidden">
+              <div className="absolute -top-10 -right-10 w-40 h-40 bg-premium-indigo/20 rounded-full blur-3xl"></div>
+              <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-premium-emerald/10 rounded-full blur-3xl"></div>
+              
+              <h3 className="text-3xl font-black text-white tracking-tight relative z-10">Email Config</h3>
+              <p className="text-indigo-400 text-xs font-bold uppercase tracking-[0.2em] mt-2 relative z-10">SMTP & App Credentials</p>
+              
+              <button onClick={() => setIsEmailSettingsOpen(false)} className="absolute top-8 right-8 text-white/50 hover:text-white transition-all text-2xl">✕</button>
+            </div>
+            
+            <div className="p-10 space-y-6">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Sender Address (Gmail)</label>
+                <input 
+                  type="email" 
+                  value={emailConfig.email}
+                  onChange={(e) => setEmailConfig({...emailConfig, email: e.target.value})}
+                  className="w-full input-premium py-4"
+                  placeholder="name@gmail.com"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 flex justify-between">
+                  <span>Google App Password</span>
+                  <a href="https://myaccount.google.com/apppasswords" target="_blank" className="text-premium-indigo hover:underline">Get Key ↗</a>
+                </label>
+                <input 
+                  type="password" 
+                  value={emailConfig.password}
+                  onChange={(e) => setEmailConfig({...emailConfig, password: e.target.value})}
+                  className="w-full input-premium py-4"
+                  placeholder="•••• •••• •••• ••••"
+                />
+                <p className="text-[9px] text-slate-400 font-medium leading-relaxed italic">
+                  ⚠️ Do NOT use your regular password. Create an "App Password" in your Google Account Security settings.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Company Display Name</label>
+                <input 
+                  type="text" 
+                  value={emailConfig.name}
+                  onChange={(e) => setEmailConfig({...emailConfig, name: e.target.value})}
+                  className="w-full input-premium py-4"
+                  placeholder="BlueBloodExports"
+                />
+              </div>
+
+              <div className="pt-6 border-t border-slate-100 mt-6">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Verification</p>
+                <div className="flex gap-2">
+                  <input 
+                    type="email" 
+                    id="testEmailAddress"
+                    placeholder="test@example.com"
+                    className="flex-1 input-premium py-3 text-xs"
+                  />
                   <button 
-                    disabled={outreachSelectedLeads.length === 0}
-                    onClick={handleBatchSend}
-                    className="bg-blue-700 hover:bg-blue-800 text-white px-6 py-2.5 rounded-lg font-bold text-sm shadow-lg shadow-blue-500/20 transition-all disabled:opacity-50 disabled:grayscale uppercase tracking-wide flex items-center gap-2"
+                    onClick={async () => {
+                      const email = document.getElementById('testEmailAddress').value;
+                      if (!email) return showNotification('Enter a test email address', 'error');
+                      
+                      try {
+                        const res = await fetch('http://localhost:4000/api/test-email', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ config: emailConfig, to: email })
+                        });
+                        const data = await res.json();
+                        if (data.success) showNotification('Test email sent! Check your inbox.', 'success');
+                        else showNotification('Test failed: ' + data.error, 'error');
+                      } catch (err) {
+                        showNotification('Network error', 'error');
+                      }
+                    }}
+                    className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
                   >
-                    🚀 Batch Create Drafts ({outreachSelectedLeads.length})
+                    Test SMTP
                   </button>
                 </div>
               </div>
+
+              <button 
+                onClick={() => {
+                  setIsEmailSettingsOpen(false);
+                  showNotification('Settings saved successfully!');
+                }}
+                className="w-full bg-slate-900 hover:bg-black text-white py-5 rounded-[24px] font-black uppercase tracking-[0.2em] text-xs shadow-xl active:scale-95 transition-all mt-4"
+              >
+                Save Configuration
+              </button>
             </div>
           </div>
         </div>
@@ -1308,7 +1660,7 @@ function App() {
                       </th>
                       <th className="px-3 py-3 w-8">Pipeline Status</th>
                       <th className="px-3 py-3">Follow-Up</th>
-                      {['Company Name', 'Decision Maker', 'LinkedIn', 'Email', 'Smart Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
+                      {['Company Name', 'Decision Maker', 'Last Contacted', 'LinkedIn', 'Email', 'Smart Mail', 'Phone', 'Country', 'Business Type', 'Target Audience', 'Instagram', 'Notes', 'Lead Score', 'Chance'].map((header) => (
                         <th key={header} onClick={() => handleSort(header)} className="px-3 py-3 cursor-pointer hover:bg-slate-200 whitespace-nowrap">{header} {sortConfig?.key === header ? (sortConfig.direction === 'ascending' ? '▲' : '▼') : ''}</th>
                       ))}
                       <th className="px-3 py-3 text-right">Actions</th>
@@ -1351,6 +1703,9 @@ function App() {
                           </td>
                           <td className="px-3 py-2 font-semibold text-slate-800 cursor-pointer hover:bg-blue-100 hover:text-blue-900 transition-colors" title="Click to copy" onClick={() => copyData(lead['Company Name'])}>{lead['Company Name']}</td>
                           <td className="px-3 py-2 text-slate-700 font-medium cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead['Decision Maker'])}>{lead['Decision Maker'] || '-'}</td>
+                          <td className="px-3 py-2 text-[10px] text-slate-500 font-mono">
+                            {lead['Last Contacted'] ? new Date(lead['Last Contacted']).toLocaleDateString() : '-'}
+                          </td>
                           <td className="px-3 py-2 font-medium">
                             <button onClick={(e) => handleLinkedInSearch(e, lead)} className="text-white bg-[#0a66c2] hover:bg-[#004182] px-2 py-1 rounded text-[10px] uppercase font-bold tracking-wider transition-all shadow-sm">🔍 Find Owner</button>
                           </td>
@@ -1374,18 +1729,9 @@ function App() {
                                 {(lead.Status === 'Replied' || lead.Status === 'Negotiation') && (
                                   <a href={`mailto:${lead.Email}`} onClick={(e) => e.stopPropagation()} className="text-blue-600 border border-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all uppercase whitespace-nowrap flex items-center justify-center gap-1">✍️ Reply Directly</a>
                                 )}
-                            <button 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                toggleDbLeadSelection(lead.originalIndex); 
-                              }} 
-                              className="text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3 py-1 rounded-full text-[9px] font-black transition-all uppercase whitespace-nowrap"
-                            >
-                              ⚙️ Manage in Outreach
-                            </button>
-                          </div>
-                        ) : '-'}
-                      </td>
+                              </div>
+                            ) : '-'}
+                          </td>
                       <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" title="Click to copy" onClick={() => copyData(lead.Phone)}>{lead.Phone || '-'}</td>
                       <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead.Country)}>{lead.Country || '-'}</td>
                       <td className="px-3 py-2 text-slate-600 cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => copyData(lead['Business Type'])}>{lead['Business Type'] || '-'}</td>
@@ -1419,7 +1765,7 @@ function App() {
               </tbody>
             </table>
           </div>
-            )}
+          )}
             <div className="bg-[#f8fafc] border-t border-slate-200 px-4 py-2 flex justify-between items-center text-[10px] uppercase font-bold text-slate-500 shrink-0">
               <span>Showing {sortedLeads.length} {dbView === 'active' ? 'Active' : 'Trashed'} Leads</span>
               <span>CSV File Verified</span>

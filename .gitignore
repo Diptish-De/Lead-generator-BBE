@@ -3,3 +3,10 @@ node_modules/
 output/
 credentials.json
 *.log
+*.lock
+pending_batches.json
+scratch/
+patch*.js
+apply_patch*.js
+test*.js
+build_error.txt

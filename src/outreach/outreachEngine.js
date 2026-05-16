@@ -63,6 +63,40 @@ Best,
 ${senderName}
 BlueBloodExports`
     },
+    professionalB2B: {
+        subject: 'B2B Collaboration Inquiry — BlueBloodExports',
+        body: (lead, senderName) => `Dear ${lead.contactName || 'there'},
+
+I hope you are doing well.
+
+We are BlueBloodExports, an India-based export company specializing in handcrafted furniture, home décor, and traditional handicrafts for international importers, wholesalers, retailers, and sourcing partners.
+
+Our product range includes:
+• Handcrafted wooden furniture
+• Dhokra metal crafts
+• Terracotta décor
+• Handwoven textiles & rugs
+• Traditional Indian handicrafts & lifestyle products
+
+We focus on premium craftsmanship, competitive FOB/CIF pricing, reliable delivery, and customization based on buyer requirements.
+
+Please find our product catalogue attached for your reference.
+
+You can also learn more about us at:
+https://www.bluebloodexports.com/
+
+If you are interested, we would be happy to discuss pricing, product details, or potential business opportunities.
+
+You can contact us through:
+• hello@bluebloodexports.com
+• +91 78120 28686
+• Or simply reply to this email
+
+Looking forward to hearing from you.
+
+Best regards,
+BlueBloodExports`
+    },
 
     replyEmail: {
         subject: 'Re: Quick idea for your store',

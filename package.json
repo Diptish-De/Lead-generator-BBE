@@ -21,11 +21,15 @@
     "express": "^5.2.1",
     "imap-simple": "^5.1.0",
     "mailparser": "^3.9.6",
+    "multer": "^2.1.1",
     "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.7",
+    "pdf-parse": "^2.4.5",
     "puppeteer": "^21.6.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "xlsx": "^0.18.5"
   },
   "author": "BBE",
   "license": "ISC",
