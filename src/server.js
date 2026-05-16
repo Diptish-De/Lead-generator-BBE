@@ -14,6 +14,7 @@ const { scoreAndFilterLeads } = require('./analyzer/leadScorer');
 const { exportToCsv } = require('./output/csvExporter');
 const { exportToGoogleSheet } = require('./output/sheetsExporter');
 const config = require('./config');
+const supabase = require('./utils/supabase');
 
 const outreachEngine = require('./outreach/outreachEngine');
 const { checkReplies } = require('./outreach/replyChecker');
@@ -221,90 +222,62 @@ app.post('/api/suggest-keywords', async (req, res) => {
   }
 });
 
-// GET all leads from CSV
-app.get('/api/leads', (req, res) => {
-  const results = [];
-  const csvPath = path.resolve(config.outputFile);
+// GET all leads from Supabase
+app.get('/api/leads', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('*')
+      .order('id', { ascending: true });
 
-  if (!fs.existsSync(csvPath)) {
-    return res.json({ leads: [] });
+    if (error) throw error;
+    res.json({ leads: data || [] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-
-  fs.createReadStream(csvPath)
-    .pipe(csv())
-    .on('data', (data) => results.push(data))
-    .on('end', () => {
-      res.json({ leads: results });
-    })
-    .on('error', (error) => {
-      res.status(500).json({ error: error.message });
-    });
 });
 
-// UPDATE a lead by index (0-based) for Status or Emailed
-app.put('/api/leads/:index', (req, res) => {
-  const indexToUpdate = parseInt(req.params.index, 10);
-  const updates = req.body; // e.g., { Status: 'Trashed', Emailed: 'true' }
-  const results = [];
-  const csvPath = path.resolve(config.outputFile);
+// UPDATE a lead by ID
+app.put('/api/leads/:id', async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
 
-  if (!fs.existsSync(csvPath)) return res.status(404).json({ error: 'File not found' });
+  try {
+    const { data, error } = await supabase
+      .from('leads')
+      .update(updates)
+      .eq('id', id)
+      .select();
 
-  fs.createReadStream(csvPath)
-    .pipe(csv())
-    .on('data', (data) => results.push(data))
-    .on('end', async () => {
-      if (indexToUpdate >= 0 && indexToUpdate < results.length) {
-        results[indexToUpdate] = { ...results[indexToUpdate], ...updates };
-
-        if (updates.Status && ['Contacted', 'Replied', 'Negotiation'].includes(updates.Status)) {
-          results[indexToUpdate]['Last Contacted'] = new Date().toISOString();
-        }
-
-        const { createObjectCsvWriter } = require('csv-writer');
-        const csvWriter = createObjectCsvWriter({
-          path: csvPath,
-          header: config.csvHeaders.map(h => ({ id: h, title: h })),
-          encoding: 'utf8'
-        });
-
-        await csvWriter.writeRecords(results);
-        res.json({ success: true, leads: results });
-      } else {
-        res.status(400).json({ error: 'Invalid index' });
-      }
-    });
+    if (error) throw error;
+    
+    // Fetch all leads again to keep frontend in sync (as per old behavior)
+    const { data: allLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+    res.json({ success: true, leads: allLeads });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// DELETE a lead by index (0-based) - PERMANENT DELETE
-app.delete('/api/leads/:index', (req, res) => {
-  const indexToDelete = parseInt(req.params.index, 10);
-  const results = [];
-  const csvPath = path.resolve(config.outputFile);
+// DELETE a lead by ID
+app.delete('/api/leads/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { error } = await supabase
+      .from('leads')
+      .delete()
+      .eq('id', id);
 
-  if (!fs.existsSync(csvPath)) return res.status(404).json({ error: 'File not found' });
-
-  fs.createReadStream(csvPath)
-    .pipe(csv())
-    .on('data', (data) => results.push(data))
-    .on('end', async () => {
-      if (indexToDelete >= 0 && indexToDelete < results.length) {
-        results.splice(indexToDelete, 1);
-
-        const { createObjectCsvWriter } = require('csv-writer');
-        const csvWriter = createObjectCsvWriter({
-          path: csvPath,
-          header: config.csvHeaders.map(h => ({ id: h, title: h })),
-          encoding: 'utf8'
-        });
-
-        await csvWriter.writeRecords(results);
-        res.json({ success: true, leads: results });
-      } else {
-        res.status(400).json({ error: 'Invalid index' });
-      }
-    });
+    if (error) throw error;
+    
+    const { data: allLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+    res.json({ success: true, leads: allLeads });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
+
+// Old legacy delete removed
 
 // EXPORT to Sheets Endpoint
 app.post('/api/export-sheets', async (req, res) => {
@@ -608,7 +581,13 @@ async function runScraperJob(options = {}, signal) {
     }
 
     checkAbort();
+    checkAbort();
     await exportToCsv(finalLeads);
+
+    // Sync to Supabase
+    console.log(`☁️ Syncing ${finalLeads.length} new leads to Supabase...`);
+    const { error: sbError } = await supabase.from('leads').insert(finalLeads);
+    if (sbError) console.error('❌ Supabase Sync Error:', sbError.message);
     
     // Auto-Export to Sheets if enabled
     if (options.autoExport) {
@@ -633,80 +612,67 @@ async function runScraperJob(options = {}, signal) {
 
 // BULK UPDATE leads
 app.post('/api/leads/bulk-update', async (req, res) => {
-  const { indices, updates } = req.body;
-  if (!indices || !Array.isArray(indices)) return res.status(400).json({ error: 'Indices required' });
-
-  await waitForLock();
-  isWriting = true;
-
+  const { ids, indices, updates } = req.body;
+  
   try {
-    const results = [];
-    const csvPath = path.resolve(config.outputFile);
-    
-    // Read current
-    const fs = require('fs');
-    const stream = fs.createReadStream(csvPath).pipe(csv());
-    for await (const row of stream) { results.push(row); }
+    if (ids && Array.isArray(ids)) {
+      // Modern ID-based bulk update
+      const { error } = await supabase
+        .from('leads')
+        .update({
+          ...updates,
+          'Last Contacted': updates.Status && ['Contacted', 'Replied', 'Negotiation'].includes(updates.Status) 
+            ? new Date().toISOString() 
+            : undefined
+        })
+        .in('id', ids);
 
-    // Update multiples
-    indices.forEach(idx => {
-      if (idx >= 0 && idx < results.length) {
-        results[idx] = { ...results[idx], ...updates };
-        if (updates.Status && ['Contacted', 'Replied', 'Negotiation'].includes(updates.Status)) {
-          results[idx]['Last Contacted'] = new Date().toISOString();
-        }
-      }
-    });
+      if (error) throw error;
+    } else if (indices && Array.isArray(indices)) {
+      // Legacy index-based update (fallback)
+      // Since we just migrated, we'll fetch all and update by index
+      const { data: allLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+      const targetIds = indices.map(idx => allLeads[idx]?.id).filter(Boolean);
+      
+      const { error } = await supabase
+        .from('leads')
+        .update({
+          ...updates,
+          'Last Contacted': updates.Status && ['Contacted', 'Replied', 'Negotiation'].includes(updates.Status) 
+            ? new Date().toISOString() 
+            : undefined
+        })
+        .in('id', targetIds);
 
-    // Write back
-    const { createObjectCsvWriter } = require('csv-writer');
-    const csvWriter = createObjectCsvWriter({
-      path: csvPath,
-      header: config.csvHeaders.map(h => ({ id: h, title: h })),
-      encoding: 'utf8'
-    });
-    await csvWriter.writeRecords(results);
-    res.json({ success: true, leads: results });
+      if (error) throw error;
+    }
+
+    const { data: updatedLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+    res.json({ success: true, leads: updatedLeads });
   } catch (err) {
     res.status(500).json({ error: err.message });
-  } finally {
-    isWriting = false;
   }
 });
 
 // BULK DELETE leads
 app.post('/api/leads/bulk-delete', async (req, res) => {
-  const { indices } = req.body;
-  if (!indices || !Array.isArray(indices)) return res.status(400).json({ error: 'Indices required' });
-
-  await waitForLock();
-  isWriting = true;
+  const { ids, indices } = req.body;
 
   try {
-    const results = [];
-    const csvPath = path.resolve(config.outputFile);
-    const fs = require('fs');
-    const stream = fs.createReadStream(csvPath).pipe(csv());
-    for await (const row of stream) { results.push(row); }
+    if (ids && Array.isArray(ids)) {
+      const { error } = await supabase.from('leads').delete().in('id', ids);
+      if (error) throw error;
+    } else if (indices && Array.isArray(indices)) {
+      const { data: allLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+      const targetIds = indices.map(idx => allLeads[idx]?.id).filter(Boolean);
+      const { error } = await supabase.from('leads').delete().in('id', targetIds);
+      if (error) throw error;
+    }
 
-    // Sort indices descending to keep removal stable
-    const sortedIndices = [...indices].sort((a, b) => b - a);
-    sortedIndices.forEach(idx => {
-      if (idx >= 0 && idx < results.length) results.splice(idx, 1);
-    });
-
-    const { createObjectCsvWriter } = require('csv-writer');
-    const csvWriter = createObjectCsvWriter({
-      path: csvPath,
-      header: config.csvHeaders.map(h => ({ id: h, title: h })),
-      encoding: 'utf8'
-    });
-    await csvWriter.writeRecords(results);
-    res.json({ success: true, leads: results });
+    const { data: updatedLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+    res.json({ success: true, leads: updatedLeads });
   } catch (err) {
     res.status(500).json({ error: err.message });
-  } finally {
-    isWriting = false;
   }
 });
 

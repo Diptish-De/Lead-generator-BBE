@@ -267,11 +267,11 @@ function App() {
         pollOutreachStatus(data.batchId);
         
         // Auto-mark as contacted
-        const indicesToUpdate = outreachSelectedLeads;
+        const idsToUpdate = outreachSelectedLeads.map(idx => dbLeads[idx]?.id).filter(Boolean);
         await fetch('http://localhost:4000/api/leads/bulk-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ indices: indicesToUpdate, updates: { Status: 'Contacted', 'Last Contacted': new Date().toISOString() } })
+          body: JSON.stringify({ ids: idsToUpdate, updates: { Status: 'Contacted', 'Last Contacted': new Date().toISOString() } })
         });
         
         fetchLeads();
@@ -302,17 +302,14 @@ function App() {
     }
   }, [logs, activeTab]);
 
-  const toggleDbLeadSelection = (index) => {
+  const toggleDbLeadSelection = (id) => {
     setDbSelectedLeads(prev => 
-      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   };
 
   const selectAllFilteredDbLeads = () => {
-    // We only select the leads that are currently visible/filtered
-    // For simplicity in this version, we'll select the mapped indices from sortedLeads
-    // Assuming 'sortedLeads' is available in the component's scope from a memoized calculation
-    setDbSelectedLeads(sortedLeads.map(l => l.originalIndex));
+    setDbSelectedLeads(sortedLeads.map(l => l.id));
   };
 
   const clearDbSelectedLeads = () => {
@@ -481,9 +478,9 @@ function App() {
     setIsLoadingDB(false);
   };
 
-  const updateStatus = async (index, newStatus) => {
+  const updateStatus = async (leadId, newStatus) => {
     try {
-      const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
+      const res = await fetch(`http://localhost:4000/api/leads/${leadId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ Status: newStatus })
@@ -495,23 +492,26 @@ function App() {
     }
   };
 
-  const moveToTrash = async (index) => {
+  const moveToTrash = async (leadId) => {
     try {
-      const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
+      const res = await fetch(`http://localhost:4000/api/leads/${leadId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ Status: 'Trashed' })
       });
       const data = await res.json();
-      if (data.success) setDbLeads(data.leads);
+      if (data.success) {
+        setDbLeads(data.leads);
+        showNotification('Lead moved to trash');
+      }
     } catch (err) {
       console.error('Failed to trash lead', err);
     }
   };
 
-  const restoreLead = async (index) => {
+  const restoreLead = async (leadId) => {
     try {
-      const res = await fetch(`http://localhost:4000/api/leads/${index}`, {
+      const res = await fetch(`http://localhost:4000/api/leads/${leadId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ Status: '' })
@@ -523,10 +523,10 @@ function App() {
     }
   };
 
-  const permanentDelete = async (index) => {
+  const permanentDelete = async (leadId) => {
     if (!window.confirm("Permanently delete this lead? This cannot be undone.")) return;
     try {
-      const res = await fetch(`http://localhost:4000/api/leads/${index}`, { method: 'DELETE' });
+      const res = await fetch(`http://localhost:4000/api/leads/${leadId}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) setDbLeads(data.leads);
     } catch (err) {
@@ -701,7 +701,7 @@ function App() {
           </button>
           <button 
             onClick={() => setActiveTab('outreach')}
-            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'outreach' ? 'bg-white shadow-sm text-premium-emerald' : 'text-slate-400 hover:text-slate-600'}`}
+            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'outreach' ? 'bg-premium-emerald' : 'text-slate-400 hover:text-slate-600'}`}
           >
             ✉️ Outreach
           </button>
@@ -930,13 +930,13 @@ function App() {
                         <div className="flex-1 flex flex-col">
                           <div className="space-y-4 font-mono text-[11px] text-slate-400 flex-1 overflow-y-auto custom-scrollbar pr-2">
                             <div className="bg-white/5 p-4 rounded-2xl border border-white/5">
-                              <div className="flex gap-3 mb-2"><span className="text-slate-600 w-12 text-right">TO:</span> <span className="text-blue-300 font-bold">{dbLeads[outreachSelectedLeads[0]].Email}</span></div>
-                              <div className="flex gap-3"><span className="text-slate-600 w-12 text-right">SUBJ:</span> <span className="text-white">{parseVariables(userTemplates[activeTemplateId].subject, dbLeads[outreachSelectedLeads[0]])}</span></div>
+                              <div className="flex gap-3 mb-2"><span className="text-slate-600 w-12 text-right">TO:</span> <span className="text-blue-300 font-bold">{dbLeads.find(l => l.id === outreachSelectedLeads[0])?.Email}</span></div>
+                              <div className="flex gap-3"><span className="text-slate-600 w-12 text-right">SUBJ:</span> <span className="text-white">{parseVariables(userTemplates[activeTemplateId].subject, dbLeads.find(l => l.id === outreachSelectedLeads[0]))}</span></div>
                             </div>
                             
                             <div className="bg-white/5 p-6 rounded-3xl border border-white/5 relative">
                               <div className="whitespace-pre-wrap leading-relaxed text-slate-300 text-xs">
-                                {parseVariables(userTemplates[activeTemplateId].body, dbLeads[outreachSelectedLeads[0]])}
+                                {parseVariables(userTemplates[activeTemplateId].body, dbLeads.find(l => l.id === outreachSelectedLeads[0]))}
                                 
                                 {catalogUrl && (
                                   <div className="mt-6 p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl text-[10px] text-indigo-300 flex items-center gap-3">
@@ -968,7 +968,7 @@ function App() {
                                 </div>
                               </div>
                               
-                              {!dbLeads[outreachSelectedLeads[0]]['Decision Maker'] && (
+                              {!dbLeads.find(l => l.id === outreachSelectedLeads[0])?.['Decision Maker'] && (
                                 <div className="absolute -top-3 -right-3 bg-red-600 text-white px-3 py-1 rounded-full text-[8px] font-black uppercase shadow-xl animate-bounce">⚠️ Missing Name!</div>
                               )}
                             </div>
@@ -1020,10 +1020,10 @@ function App() {
                           <th className="px-6 py-4 w-12 text-center">
                             <input 
                               type="checkbox" 
-                              checked={outreachSelectedLeads.length > 0 && sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).every(l => outreachSelectedLeads.includes(l.originalIndex))}
+                              checked={outreachSelectedLeads.length > 0 && sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).every(l => outreachSelectedLeads.includes(l.id))}
                               onChange={(e) => {
                                 if (e.target.checked) {
-                                  setOutreachSelectedLeads(sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map(l => l.originalIndex));
+                                  setOutreachSelectedLeads(sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map(l => l.id));
                                 } else {
                                   setOutreachSelectedLeads([]);
                                 }
@@ -1039,12 +1039,12 @@ function App() {
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {sortedLeads.filter(l => l.Status !== 'Trashed' && l.Email).map((lead) => (
-                          <tr key={lead.originalIndex} className={`group transition-all ${outreachSelectedLeads.includes(lead.originalIndex) ? 'bg-indigo-50/30' : 'hover:bg-slate-50'}`}>
+                          <tr key={lead.id} className={`group transition-all ${outreachSelectedLeads.includes(lead.id) ? 'bg-indigo-50/30' : 'hover:bg-slate-50'}`}>
                             <td className="px-6 py-5 text-center">
                               <input 
                                 type="checkbox" 
-                                checked={outreachSelectedLeads.includes(lead.originalIndex)}
-                                onChange={() => toggleLeadSelection(lead.originalIndex)}
+                                checked={outreachSelectedLeads.includes(lead.id)}
+                                onChange={() => toggleLeadSelection(lead.id)}
                                 className="w-4 h-4 rounded-lg border-slate-300 text-premium-indigo focus:ring-premium-indigo transition-all cursor-pointer"
                               />
                             </td>
@@ -1072,13 +1072,12 @@ function App() {
                             <td className="px-6 py-5 text-right">
                               <button 
                                 onClick={() => {
-                                  toggleLeadSelection(lead.originalIndex);
-                                  // Scroll to editor
+                                  toggleLeadSelection(lead.id);
                                   window.scrollTo({ top: 0, behavior: 'smooth' });
                                 }}
                                 className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black text-slate-600 hover:border-premium-indigo hover:text-premium-indigo transition-all uppercase tracking-widest shadow-sm"
                               >
-                                {outreachSelectedLeads.includes(lead.originalIndex) ? 'Deselect' : 'Draft ✉️'}
+                                {outreachSelectedLeads.includes(lead.id) ? 'Deselect' : 'Draft ✉️'}
                               </button>
                             </td>
                           </tr>
@@ -1464,7 +1463,7 @@ function App() {
         </div>
       )}
 
-      {/* --- TAB CONTENT: DATABASE CRM --- (Unchanged) */}
+      {/* --- TAB CONTENT: DATABASE CRM --- */}
       {activeTab === 'database' && (
         <div className="flex-1 flex flex-col p-4 md:p-6 min-h-0 w-full overflow-hidden bg-white">
           {/* Database Control Bar */}
@@ -1508,7 +1507,7 @@ function App() {
                         const res = await fetch('http://localhost:4000/api/leads/bulk-update', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ indices: dbSelectedLeads, updates: { Status: 'In Outreach' } })
+                          body: JSON.stringify({ ids: dbSelectedLeads, updates: { Status: 'In Outreach' } })
                         });
                         const data = await res.json();
                         if (data.success) {
@@ -1527,7 +1526,7 @@ function App() {
                         const res = await fetch('http://localhost:4000/api/leads/bulk-update', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ indices: dbSelectedLeads, updates: { Status: 'Trashed' } })
+                          body: JSON.stringify({ ids: dbSelectedLeads, updates: { Status: 'Trashed' } })
                         });
                         const data = await res.json();
                         if (data.success) {
@@ -1548,7 +1547,7 @@ function App() {
                         const res = await fetch('http://localhost:4000/api/leads/bulk-update', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ indices: dbSelectedLeads, updates: { Status: '' } })
+                          body: JSON.stringify({ ids: dbSelectedLeads, updates: { Status: '' } })
                         });
                         const data = await res.json();
                         if (data.success) {
@@ -1567,7 +1566,7 @@ function App() {
                           const res = await fetch('http://localhost:4000/api/leads/bulk-delete', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ indices: dbSelectedLeads })
+                            body: JSON.stringify({ ids: dbSelectedLeads })
                           });
                           const data = await res.json();
                           if (data.success) {
@@ -1668,7 +1667,7 @@ function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {sortedLeads.map((lead) => {
-                      const idx = lead.originalIndex;
+                      const id = lead.id;
                       
                       // Auto-Follow Up Logic
                       const lastContacted = lead['Last Contacted'] ? new Date(lead['Last Contacted']) : null;
@@ -1676,19 +1675,19 @@ function App() {
                       const isOverdue = (lead.Status === 'Contacted' || lead.Status === 'Replied' || lead.Status === 'Negotiation') && daysPassed >= 3;
 
                       return (
-                        <tr key={idx} className={`hover:bg-blue-50/40 transition-colors ${dbSelectedLeads.includes(idx) ? 'bg-blue-50/70 border-l-4 border-l-blue-500' : isOverdue ? 'bg-red-50/50 border-l-4 border-l-red-500' : lead.Status === 'Contacted' ? 'bg-indigo-50/40' : lead.Status === 'Replied' ? 'bg-amber-50/40' : lead.Status === 'Closed' ? 'bg-teal-50/50' : ''}`}>
+                        <tr key={id} className={`hover:bg-blue-50/40 transition-colors ${dbSelectedLeads.includes(id) ? 'bg-blue-50/70 border-l-4 border-l-blue-500' : isOverdue ? 'bg-red-50/50 border-l-4 border-l-red-500' : lead.Status === 'Contacted' ? 'bg-indigo-50/40' : lead.Status === 'Replied' ? 'bg-amber-50/40' : lead.Status === 'Closed' ? 'bg-teal-50/50' : ''}`}>
                           <td className="px-3 py-2 text-center">
                             <input 
                               type="checkbox" 
-                              checked={dbSelectedLeads.includes(idx)}
-                              onChange={() => toggleDbLeadSelection(idx)}
+                              checked={dbSelectedLeads.includes(id)}
+                              onChange={() => toggleDbLeadSelection(id)}
                               className="w-4 h-4 rounded text-blue-600 cursor-pointer"
                             />
                           </td>
                           <td className="px-3 py-2 text-center" onClick={(e) => e.stopPropagation()}>
                             <select 
                               value={lead.Status && lead.Status !== 'Trashed' ? lead.Status : 'New'} 
-                              onChange={(e) => updateStatus(idx, e.target.value)}
+                              onChange={(e) => updateStatus(id, e.target.value)}
                               className="bg-white border border-slate-300 rounded text-[11px] font-bold p-1 shadow-sm focus:ring-1 focus:ring-blue-500 cursor-pointer"
                             >
                               <option value="New">🔵 New Lead</option>
