@@ -279,6 +279,55 @@ app.delete('/api/leads/:id', async (req, res) => {
 
 // Old legacy delete removed
 
+// IMPORT leads from CSV
+app.post('/api/leads/import', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const results = [];
+  const bufferStream = require('stream').Readable.from(req.file.buffer.toString());
+  
+  try {
+    bufferStream
+      .pipe(csv())
+      .on('data', (data) => results.push(data))
+      .on('end', async () => {
+        // Map common headers to our schema
+        const mappedLeads = results.map(row => {
+          const lead = {};
+          // Normalize keys (case-insensitive and space-flexible)
+          const findVal = (names) => {
+            const key = Object.keys(row).find(k => 
+              names.some(n => k.toLowerCase().replace(/\s/g, '').includes(n.toLowerCase().replace(/\s/g, '')))
+            );
+            return key ? row[key] : null;
+          };
+
+          lead['Company Name'] = findVal(['Company', 'Business', 'Name', 'Title']) || 'Unknown';
+          lead['Email'] = findVal(['Email', 'Mail', 'Contact Email']);
+          lead['Website'] = findVal(['Website', 'URL', 'Link', 'Site']);
+          lead['Country'] = findVal(['Country', 'Location', 'Region']);
+          lead['City'] = findVal(['City', 'Town']);
+          lead['Phone'] = findVal(['Phone', 'Mobile', 'Tel', 'Contact']);
+          lead['Status'] = 'New';
+          
+          return lead;
+        }).filter(l => l.Email); // Only import leads with emails
+
+        if (mappedLeads.length === 0) {
+          return res.status(400).json({ error: 'No valid leads found (missing Email column?)' });
+        }
+
+        const { error } = await supabase.from('leads').insert(mappedLeads);
+        if (error) throw error;
+
+        const { data: allLeads } = await supabase.from('leads').select('*').order('id', { ascending: true });
+        res.json({ success: true, count: mappedLeads.length, leads: allLeads });
+      });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // EXPORT to Sheets Endpoint
 app.post('/api/export-sheets', async (req, res) => {
   try {

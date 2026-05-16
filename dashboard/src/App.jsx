@@ -554,6 +554,35 @@ function App() {
     }
   };
 
+  const handleImportCSV = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    setIsLoadingDB(true);
+    try {
+      const res = await fetch('http://localhost:4000/api/leads/import', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDbLeads(data.leads);
+        showNotification(`🚀 Imported ${data.count} leads successfully!`, 'success');
+      } else {
+        showNotification(data.error || 'Import failed', 'error');
+      }
+    } catch (err) {
+      console.error('Import failed', err);
+      showNotification('Server error during import', 'error');
+    } finally {
+      setIsLoadingDB(false);
+      e.target.value = ''; // Reset input
+    }
+  };
+
   const copyData = (text) => {
     if (!text || text === '-') return;
     navigator.clipboard.writeText(text);
@@ -1488,11 +1517,25 @@ function App() {
               </div>
 
               <button 
+                onClick={() => document.getElementById('csvImportInput').click()}
+                className="ml-2 px-4 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all bg-slate-800 text-white hover:bg-slate-900 border border-slate-700 flex items-center gap-2 shadow-sm"
+              >
+                📥 Import CSV
+              </button>
+              <input 
+                id="csvImportInput"
+                type="file" 
+                accept=".csv" 
+                onChange={handleImportCSV} 
+                className="hidden" 
+              />
+
+              <button 
                 onClick={handleCheckReplies}
                 disabled={isCheckingReplies}
                 className={`ml-2 px-4 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-2 ${isCheckingReplies ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200'}`}
               >
-                {isCheckingReplies ? <span className="animate-spin text-emerald-400">↻</span> : '📥'} {isCheckingReplies ? 'Checking...' : 'Check Replies'}
+                {isCheckingReplies ? <span className="animate-spin text-emerald-400">↻</span> : '✨'} {isCheckingReplies ? 'Checking...' : 'Check Replies'}
               </button>
             </div>
 
